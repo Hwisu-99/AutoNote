@@ -1,0 +1,39 @@
+/* AutoNote 그래프 뷰 (Obsidian 그래프 뷰 스타일, d3-force) */
+
+:root {
+  --tag-green: #4C9A6A;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --tag-green: #6FBE8F; }
+}
+
+.layout {
+  display: flex; align-items: flex-start; gap: 32px;
+  width: 100%; max-width: 1720px;
+}
+main { flex-shrink: 0; }
+
+#graphPanel {
+  flex: 1 1 980px; min-width: 640px; height: 620px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: 16px; display: flex; flex-direction: column;
+  position: sticky; top: 64px;
+}
+.graph-title { font-weight: 600; font-size: .9rem; color: var(--text-muted); margin-bottom: 8px; }
+.graph-hint { font-size: .78rem; color: var(--text-muted); margin-bottom: 10px; }
+.graph-toolbar { display: flex; gap: 8px; margin-bottom: 10px; }
+.graph-btn {
+  background: none; border: 1px solid var(--border); border-radius: 999px;
+  color: var(--text-muted); font-size: .8rem; font-weight: 600;
+  padding: 5px 14px; cursor: pointer; transition: border-color .15s ease, color .15s ease, background .15s ease;
+}
+.graph-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.graph-btn.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.graph-btn:disabled { opacity: .45; cursor: not-allowed; }
+#graphSvg { flex: 1; width: 100%; }
+
+.node-note { fill: var(--accent); stroke: var(--surface); stroke-width: 1.5px; cursor: grab; }
+.node-tag { fill: var(--tag-green); stroke: var(--surface); stroke-width: 1px; cursor: grab; }
+.node-entity, .node-concept { fill: var(--text-muted); stroke: var(--surface); stroke-width: 1px; cursor: grab; }
+.graph-label { fill: var(--text-muted); font-size: 10px; pointer-events: none; user-select: none; }
+.graph-link { stroke: var(--border); stroke-opacity: .7; }

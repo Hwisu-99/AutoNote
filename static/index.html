@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AutoNote</title>
+<link rel="stylesheet" href="/graph.css" />
+<style>
+  :root {
+    --bg: #FAF9F5;
+    --surface: #FFFFFF;
+    --border: #E8E6DC;
+    --text: #141413;
+    --text-muted: #6B6A65;
+    --accent: #D97757;
+    --accent-hover: #C86A4C;
+    --accent-soft: #FBE9E1;
+    --error: #C0442F;
+    --error-soft: #FCEBE7;
+    --radius: 14px;
+    --shadow: 0 1px 2px rgba(20,20,19,.04), 0 8px 24px rgba(20,20,19,.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1F1E1D;
+      --surface: #262624;
+      --border: #3A3936;
+      --text: #F5F4ED;
+      --text-muted: #A9A79E;
+      --accent: #E08A67;
+      --accent-hover: #EA9C7C;
+      --accent-soft: #3A2A22;
+      --error: #E5806B;
+      --error-soft: #3A2420;
+      --shadow: 0 1px 2px rgba(0,0,0,.2), 0 8px 24px rgba(0,0,0,.3);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Pretendard", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    padding: 64px 20px;
+    transition: background .2s ease, color .2s ease;
+  }
+  main { width: 100%; max-width: 640px; }
+
+  #paperListPanel {
+    flex: 0 0 300px; height: 620px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    box-shadow: var(--shadow); padding: 16px; display: flex; flex-direction: column;
+    position: sticky; top: 64px; overflow: hidden;
+  }
+  .panel-title { font-weight: 600; font-size: .9rem; color: var(--text-muted); margin-bottom: 10px; }
+  #paperList { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+  .paper-row {
+    display: flex; align-items: center; gap: 6px; border-radius: 8px;
+    padding: 2px; transition: background .15s ease;
+  }
+  .paper-row.selected { background: var(--accent-soft); }
+  .paper-title {
+    flex: 1; text-align: left; font-size: .85rem; color: var(--text);
+    line-height: 1.35; padding: 6px 8px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .paper-row.selected .paper-title { color: var(--accent); font-weight: 600; }
+  .paper-graph-btn {
+    flex-shrink: 0; width: 26px; height: 26px; display: flex; align-items: center; justify-content: center;
+    background: none; border: none; border-radius: 6px; color: var(--text-muted); cursor: pointer;
+    transition: background .15s ease, color .15s ease;
+  }
+  .paper-graph-btn:hover { background: var(--accent-soft); color: var(--accent); }
+  .paper-empty { font-size: .82rem; color: var(--text-muted); padding: 8px 10px; }
+
+  .eyebrow {
+    display: flex; align-items: center; justify-content: center;
+    font-size: 2.1rem; font-weight: 800; letter-spacing: .04em;
+    color: var(--accent); text-transform: uppercase; margin-bottom: 24px;
+    text-align: center;
+  }
+  h1 {
+    font-size: 1.65rem; font-weight: 650; letter-spacing: -.01em;
+    margin: 0 0 8px;
+  }
+  .subtitle { color: var(--text-muted); font-size: .95rem; margin: 0 0 36px; line-height: 1.5; }
+
+  #dropzone {
+    background: var(--surface);
+    border: 1.5px dashed var(--border);
+    border-radius: var(--radius);
+    padding: 56px 24px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color .18s ease, background .18s ease, transform .18s ease;
+    box-shadow: var(--shadow);
+  }
+  #dropzone:hover { border-color: var(--accent); transform: translateY(-1px); }
+  #dropzone.drag { border-color: var(--accent); background: var(--accent-soft); }
+
+  .dz-icon {
+    width: 44px; height: 44px; margin: 0 auto 16px;
+    border-radius: 12px; background: var(--accent-soft);
+    display: flex; align-items: center; justify-content: center;
+    color: var(--accent);
+  }
+  .dz-title { font-weight: 600; font-size: 1rem; margin-bottom: 4px; }
+  .dz-hint { color: var(--text-muted); font-size: .85rem; }
+  input[type=file] { display: none; }
+
+  #progressWrap { margin-top: 28px; display: none; }
+  #progressBar {
+    width: 100%; height: 8px; background: var(--border);
+    border-radius: 999px; overflow: hidden;
+  }
+  #progressFill {
+    height: 100%; width: 0%; border-radius: 999px;
+    background: linear-gradient(90deg, var(--accent), var(--accent-hover));
+    transition: width .35s cubic-bezier(.4,0,.2,1);
+  }
+  #progressLabel {
+    margin-top: 10px; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  }
+  .progress-status {
+    display: flex; align-items: center; gap: 8px;
+    color: var(--text-muted); font-size: .88rem;
+  }
+  .spinner {
+    width: 13px; height: 13px; border-radius: 50%;
+    border: 2px solid var(--border); border-top-color: var(--accent);
+    animation: spin .7s linear infinite; flex-shrink: 0;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  #cancelBtn {
+    background: none; border: 1px solid var(--border); border-radius: 999px;
+    color: var(--text-muted); font-size: .8rem; font-weight: 600;
+    padding: 4px 12px; cursor: pointer; flex-shrink: 0;
+    transition: border-color .15s ease, color .15s ease;
+  }
+  #cancelBtn:hover { border-color: var(--error); color: var(--error); }
+
+  #status { margin-top: 20px; }
+  .card {
+    border-radius: var(--radius); padding: 20px 22px;
+    box-shadow: var(--shadow); animation: rise .25s ease;
+  }
+  @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+  .result { background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--accent); }
+  .error { background: var(--error-soft); border-left: 3px solid var(--error); color: var(--error); }
+  .cancelled { background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--text-muted); color: var(--text-muted); }
+
+  .result strong { font-size: 1.05rem; display: block; margin-bottom: 6px; }
+  .result p { margin: 0 0 14px; color: var(--text-muted); line-height: 1.55; }
+  .meta-row {
+    display: flex; justify-content: space-between; gap: 12px;
+    font-size: .82rem; padding: 8px 0; border-top: 1px solid var(--border);
+    color: var(--text-muted);
+  }
+  .meta-row span:first-child { flex-shrink: 0; }
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: .8rem; color: var(--text); text-align: right;
+    overflow-wrap: anywhere;
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+<aside id="paperListPanel">
+  <div class="panel-title">저장된 논문</div>
+  <div id="paperList"></div>
+</aside>
+<main>
+  <div class="eyebrow">AutoNote</div>
+  <h1>논문 → Obsidian 요약 + 개념도</h1>
+  <p class="subtitle">PDF를 올리면 Claude가 읽고 구조화된 요약 노트와 Excalidraw 개념도를 만들어 vault에 저장합니다.</p>
+
+  <div id="dropzone">
+    <div class="dz-icon">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+        <polyline points="17 8 12 3 7 8"/>
+        <line x1="12" y1="3" x2="12" y2="15"/>
+      </svg>
+    </div>
+    <div class="dz-title">PDF 파일을 드래그하거나 클릭해서 선택</div>
+    <div class="dz-hint">최대 32MB · 논문 원문 PDF만 지원</div>
+    <input type="file" id="fileInput" accept="application/pdf" />
+  </div>
+
+  <div id="progressWrap">
+    <div id="progressBar"><div id="progressFill"></div></div>
+    <div id="progressLabel">
+      <span class="progress-status"><span class="spinner"></span><span id="progressText"></span></span>
+      <button id="cancelBtn" type="button">취소</button>
+    </div>
+  </div>
+
+  <div id="status"></div>
+</main>
+
+<aside id="graphPanel">
+  <div class="graph-title" id="graphTitle">Knowledge Graph</div>
+  <div class="graph-hint">논문 노드끼리는 공통 태그로, 위키링크가 있으면 그걸로도 연결됩니다.</div>
+  <div class="graph-toolbar">
+    <button class="graph-btn" id="btnFullGraph">전체 그래프 보기</button>
+  </div>
+  <svg id="graphSvg"></svg>
+</aside>
+</div>
+
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<script src="/graph.js"></script>
+<script src="/papers.js"></script>
+<script>
+const dropzone = document.getElementById('dropzone');
+const fileInput = document.getElementById('fileInput');
+const statusEl = document.getElementById('status');
+const progressWrap = document.getElementById('progressWrap');
+const progressFill = document.getElementById('progressFill');
+const progressText = document.getElementById('progressText');
+const spinner = document.querySelector('.spinner');
+const cancelBtn = document.getElementById('cancelBtn');
+
+let abortController = null;
+
+dropzone.addEventListener('click', () => fileInput.click());
+dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('drag'); });
+dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag'));
+dropzone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropzone.classList.remove('drag');
+  if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener('change', () => {
+  if (fileInput.files.length) handleFile(fileInput.files[0]);
+});
+cancelBtn.addEventListener('click', () => {
+  abortController?.abort();
+});
+
+function setProgress(percent, message, done = false) {
+  progressWrap.style.display = 'block';
+  progressFill.style.width = `${percent}%`;
+  progressText.textContent = message;
+  spinner.style.display = done ? 'none' : 'block';
+  cancelBtn.style.display = done ? 'none' : 'inline-block';
+}
+
+async function handleFile(file) {
+  statusEl.innerHTML = '';
+  if (!file.name.toLowerCase().endsWith('.pdf')) {
+    statusEl.innerHTML = '<div class="card error">PDF 파일만 지원합니다.</div>';
+    return;
+  }
+
+  abortController = new AbortController();
+  setProgress(0, `"${file.name}" 업로드 중...`);
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  try {
+    const res = await fetch('/api/process', { method: 'POST', body: formData, signal: abortController.signal });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      progressWrap.style.display = 'none';
+      statusEl.innerHTML = `<div class="card error">오류: ${data.detail || res.statusText}</div>`;
+      return;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      let newlineIndex;
+      while ((newlineIndex = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, newlineIndex).trim();
+        buffer = buffer.slice(newlineIndex + 1);
+        if (!line) continue;
+
+        const evt = JSON.parse(line);
+        if (evt.stage === 'error') {
+          progressWrap.style.display = 'none';
+          statusEl.innerHTML = `<div class="card error">${evt.message}</div>`;
+          return;
+        }
+        if (evt.stage === 'done') {
+          setProgress(100, evt.message, true);
+          statusEl.innerHTML = `
+            <div class="card result">
+              <strong>${evt.title}</strong>
+              <p>${evt.one_line_summary}</p>
+              <div class="meta-row"><span>노트</span><code>${evt.note_path}</code></div>
+              <div class="meta-row"><span>개념도</span><code>${evt.excalidraw_filename}</code></div>
+              <div class="meta-row"><span>API 비용</span><code>$${evt.api_cost_usd.toFixed(4)}</code></div>
+              <div class="meta-row"><span>Supabase</span><code>${evt.supabase_path ? evt.supabase_path : ('업로드 실패: ' + evt.supabase_error)}</code></div>
+            </div>`;
+          loadGraph(evt.title_slug, false);
+          selectedPaperSlug = evt.title_slug;
+          loadPaperList();
+        } else {
+          setProgress(evt.percent, evt.message);
+        }
+      }
+    }
+  } catch (err) {
+    progressWrap.style.display = 'none';
+    if (err.name === 'AbortError') {
+      statusEl.innerHTML = '<div class="card cancelled">취소되었습니다.</div>';
+    } else {
+      statusEl.innerHTML = `<div class="card error">요청 실패: ${err}</div>`;
+    }
+  } finally {
+    abortController = null;
+  }
+}
+</script>
+</body>
+</html>

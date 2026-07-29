@@ -1,0 +1,12 @@
+PyMuPDF
+pywin32
+google-genai
+notion-client
+requests
+python-dotenv
+anthropic
+supabase
+pyyaml
+fastapi
+uvicorn[standard]
+python-multipart
