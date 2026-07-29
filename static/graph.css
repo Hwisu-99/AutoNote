@@ -2,9 +2,10 @@
 
 :root {
   --tag-green: #4C9A6A;
+  --entity-blue: #4C7FA6;
 }
 @media (prefers-color-scheme: dark) {
-  :root { --tag-green: #6FBE8F; }
+  :root { --tag-green: #6FBE8F; --entity-blue: #7FAFDE; }
 }
 
 .layout {
@@ -34,6 +35,7 @@ main { flex-shrink: 0; }
 
 .node-note { fill: var(--accent); stroke: var(--surface); stroke-width: 1.5px; cursor: grab; }
 .node-tag { fill: var(--tag-green); stroke: var(--surface); stroke-width: 1px; cursor: grab; }
-.node-entity, .node-concept { fill: var(--text-muted); stroke: var(--surface); stroke-width: 1px; cursor: grab; }
+.node-concept { fill: var(--entity-blue); stroke: var(--surface); stroke-width: 1px; cursor: grab; }
+.node-entity { fill: var(--text-muted); stroke: var(--surface); stroke-width: 1px; cursor: grab; }
 .graph-label { fill: var(--text-muted); font-size: 10px; pointer-events: none; user-select: none; }
 .graph-link { stroke: var(--border); stroke-opacity: .7; }

@@ -112,6 +112,28 @@ SCHEMA = {
                 "additionalProperties": False,
             },
         },
+        "entities": {
+            "type": "array",
+            "description": (
+                "논문에 등장하는 구체적인 용어/기법/모델명 등 세부 단어 노드. "
+                "최대 20개까지 허용하되, 논문에 그만큼 없다면 억지로 채우지 말 것 "
+                "(실제로 의미 있는 용어만 넣을 것). "
+                "concept_id를 지정하면 concepts 배열의 해당 개념과 연결되고, "
+                "특정 개념에 속하지 않는 독립적인 용어면 concept_id를 null로 둘 것."
+            ),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "label": {"type": "string", "description": "15자 이내로 짧게"},
+                    "concept_id": {
+                        "anyOf": [{"type": "string"}, {"type": "null"}],
+                        "description": "concepts 배열의 id 중 하나. 없으면 null",
+                    },
+                },
+                "required": ["label", "concept_id"],
+                "additionalProperties": False,
+            },
+        },
     },
     "required": [
         "title",
@@ -127,6 +149,7 @@ SCHEMA = {
         "tags",
         "concepts",
         "relationships",
+        "entities",
     ],
     "additionalProperties": False,
 }

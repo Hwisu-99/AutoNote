@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import yaml
+
 
 def write_note(vault_path: str, summary: dict, title_slug: str, excalidraw_filename: str) -> str:
     """요약 결과를 Obsidian vault의 논문별 폴더에 마크다운 노트로 저장하고, 저장된 파일 경로를 반환한다."""
@@ -27,10 +29,40 @@ def write_note(vault_path: str, summary: dict, title_slug: str, excalidraw_filen
         relationship_lines.append(f"- [[{from_label}]] {arrow} [[{to_label}]]")
     relationships = "\n".join(relationship_lines)
 
+    entities = summary.get("entities", [])
+    entities_frontmatter = [
+        {
+            "label": e["label"],
+            "concept": concept_label_by_id.get(e.get("concept_id")) if e.get("concept_id") else None,
+        }
+        for e in entities
+    ]
+
+    entities_by_concept: dict[str | None, list[str]] = {}
+    for e in entities_frontmatter:
+        entities_by_concept.setdefault(e["concept"], []).append(e["label"])
+
+    concept_lines = []
+    for c in concepts:
+        concept_lines.append(f"- [[{c['label']}]]")
+        for entity_label in entities_by_concept.get(c["label"], []):
+            concept_lines.append(f"  - [[{entity_label}]]")
+    concept_links = "\n".join(concept_lines)
+
+    standalone_entities = entities_by_concept.get(None, [])
+    standalone_entity_links = "\n".join(f"- [[{label}]]" for label in standalone_entities)
+
+    frontmatter = {
+        "title": summary["title"],
+        "authors": summary["authors"],
+        "tags": summary.get("tags", []),
+        "concepts": [c["label"] for c in concepts],
+        "entities": entities_frontmatter,
+    }
+    frontmatter_yaml = yaml.safe_dump(frontmatter, allow_unicode=True, sort_keys=False).strip()
+
     content = f"""---
-title: "{summary['title']}"
-authors: "{summary['authors']}"
-tags: {summary.get('tags', [])}
+{frontmatter_yaml}
 ---
 
 # {summary['title']}
@@ -46,6 +78,9 @@ tags: {summary.get('tags', [])}
 
 ## 핵심 개념
 {concept_links}
+
+## 세부 용어
+{standalone_entity_links}
 
 ## 개념 간 관계
 {relationships}
