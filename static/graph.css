@@ -54,9 +54,13 @@ main { flex-shrink: 0; }
 #graphSvg { flex: 1; width: 100%; }
 #graphSummary:not(:empty) { margin-top: 16px; }
 
+.node-note, .node-tag, .node-concept, .node-entity { transition: opacity .15s ease; }
 .node-note { fill: var(--accent); stroke: var(--surface); stroke-width: 1.5px; cursor: grab; }
 .node-tag { fill: var(--tag-green); stroke: var(--surface); stroke-width: 1px; cursor: grab; }
 .node-concept { fill: var(--entity-blue); stroke: var(--surface); stroke-width: 1px; cursor: grab; }
 .node-entity { fill: var(--text-muted); stroke: var(--surface); stroke-width: 1px; cursor: grab; }
 .graph-label { fill: var(--text-muted); font-size: 10px; pointer-events: none; user-select: none; }
-.graph-link { stroke: var(--border); stroke-opacity: .7; }
+.graph-link { stroke: var(--border); stroke-opacity: .7; transition: opacity .15s ease, stroke .15s ease, stroke-opacity .15s ease; }
+
+.dimmed { opacity: .15; transition: opacity .15s ease; }
+.graph-link.highlighted { stroke: var(--accent); stroke-opacity: .9; stroke-width: 1.8px; }

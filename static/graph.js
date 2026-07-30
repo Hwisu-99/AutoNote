@@ -92,8 +92,6 @@ function renderGraph(data) {
     .attr('class', (d) => `node-${d.type}`)
     .call(drag(simulation));
 
-  node.append('title').text((d) => d.label);
-
   const label = g.append('g')
     .selectAll('text')
     .data(nodes)
@@ -102,6 +100,39 @@ function renderGraph(data) {
     .attr('dx', 12)
     .attr('dy', 4)
     .text((d) => d.label);
+
+  // 호버한 노드와 직접 연결된 노드/에지만 원래대로 두고 나머지는 흐리게 만든다
+  // (Obsidian 그래프 뷰의 호버 강조와 동일한 방식).
+  node
+    .on('mouseenter', (event, d) => highlightNode(d.id))
+    .on('mouseleave', clearHighlight);
+
+  function highlightNode(hoveredId) {
+    const connectedIds = new Set([hoveredId]);
+    const connectedLinkIndexes = new Set();
+
+    links.forEach((l, i) => {
+      const sourceId = typeof l.source === 'object' ? l.source.id : l.source;
+      const targetId = typeof l.target === 'object' ? l.target.id : l.target;
+      if (sourceId === hoveredId || targetId === hoveredId) {
+        connectedLinkIndexes.add(i);
+        connectedIds.add(sourceId);
+        connectedIds.add(targetId);
+      }
+    });
+
+    node.classed('dimmed', (d) => !connectedIds.has(d.id));
+    label.classed('dimmed', (d) => !connectedIds.has(d.id));
+    link
+      .classed('dimmed', (d, i) => !connectedLinkIndexes.has(i))
+      .classed('highlighted', (d, i) => connectedLinkIndexes.has(i));
+  }
+
+  function clearHighlight() {
+    node.classed('dimmed', false);
+    label.classed('dimmed', false);
+    link.classed('dimmed', false).classed('highlighted', false);
+  }
 
   simulation.on('tick', () => {
     link
