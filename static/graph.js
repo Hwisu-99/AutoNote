@@ -20,12 +20,19 @@ toggleTagsInput.addEventListener('change', () => {
   if (currentGraphData) renderGraph(currentGraphData);
 });
 
-// 확대 시 사이드바/업로드 영역을 숨기고, 지금까지 그래프 박스+요약 카드가 차지하던
-// 세로 공간을 그래프 박스 하나가 그대로 이어받도록 높이를 고정값으로 잡아준다.
-// 다시 누르면 원래 높이(620px, CSS 기본값)로 복귀한다.
+// 확대 시 사이드바/업로드 영역을 숨기고, 그래프 박스가 그 세로 공간을 이어받도록
+// 높이를 고정값으로 잡아준다. 요약 카드가 떠 있으면 "그래프 박스 + 요약 카드"가
+// 차지하던 높이 그대로, 요약 카드가 없으면(전체 그래프 보기 등) 화면 아래쪽
+// 여백까지 채우도록 뷰포트 기준으로 계산한다. 다시 누르면 원래 높이(620px,
+// CSS 기본값)로 복귀한다.
 toggleExpandInput.addEventListener('change', () => {
   if (toggleExpandInput.checked) {
-    const expandedHeight = graphColumnEl.getBoundingClientRect().height;
+    const graphSummaryEl = document.getElementById('graphSummary');
+    const hasSummary = graphSummaryEl.innerHTML.trim() !== '';
+    const expandedHeight = hasSummary
+      ? graphColumnEl.getBoundingClientRect().height
+      : window.innerHeight - graphPanelEl.getBoundingClientRect().top - 24;
+
     document.body.classList.add('graph-expanded');
     graphPanelEl.style.height = `${expandedHeight}px`;
   } else {
