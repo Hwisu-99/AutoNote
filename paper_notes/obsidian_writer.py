@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import yaml
@@ -109,3 +110,10 @@ def write_note(vault_path: str, summary: dict, title_slug: str, excalidraw_filen
 
     note_path.write_text(content, encoding="utf-8")
     return str(note_path)
+
+
+def delete_note(vault_path: str, title_slug: str) -> None:
+    """vault에서 해당 논문 폴더(.md + .excalidraw)를 통째로 삭제한다."""
+    folder = Path(vault_path) / "AutoNote" / title_slug
+    if folder.is_dir():
+        shutil.rmtree(folder)

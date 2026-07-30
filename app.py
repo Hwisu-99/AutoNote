@@ -16,7 +16,9 @@ from paper_notes.claude_client import summarize_paper
 from paper_notes.excalidraw_writer import write_diagram
 from paper_notes.extractor import extract_text
 from paper_notes.graph_builder import build_graph
+from paper_notes.obsidian_writer import delete_note as delete_local_note
 from paper_notes.obsidian_writer import write_note
+from paper_notes.supabase_writer import delete_note as delete_remote_note
 from paper_notes.supabase_writer import list_papers, upload_note
 from paper_notes.utils import slugify
 
@@ -141,6 +143,25 @@ async def get_papers():
         return {"papers": list_papers()}
     except Exception as exc:  # noqa: BLE001 - Supabase 미설정/오류 시 빈 목록으로 응답
         return {"papers": [], "error": str(exc)}
+
+
+@app.delete("/api/papers/{slug}")
+async def delete_paper(slug: str):
+    vault_path = get_vault_path()
+
+    local_error: str | None = None
+    try:
+        delete_local_note(vault_path, slug)
+    except Exception as exc:  # noqa: BLE001 - 한쪽 삭제 실패가 다른 쪽을 막지 않음
+        local_error = str(exc)
+
+    remote_error: str | None = None
+    try:
+        delete_remote_note(slug)
+    except Exception as exc:  # noqa: BLE001 - 한쪽 삭제 실패가 다른 쪽을 막지 않음
+        remote_error = str(exc)
+
+    return {"slug": slug, "local_error": local_error, "remote_error": remote_error}
 
 
 app.mount("/", StaticFiles(directory="static", html=True), name="static")

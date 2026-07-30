@@ -1,5 +1,6 @@
 // 왼쪽 사이드바: Supabase Storage에 업로드된 논문 목록을 보여주고, 각 항목 오른쪽의
 // 작은 그래프 버튼을 누르면 해당 논문만의 그래프를 보여준다(제목 "<논문제목> Knowledge Graph").
+// 휴지통 버튼을 누르면 확인 후 vault + Supabase + 그래프 뷰에서 모두 삭제한다.
 // graph.js가 먼저 로드되어 btnFullGraph/loadGraph가 전역으로 존재한다고 가정한다.
 
 const GRAPH_ICON_SVG = `
@@ -10,6 +11,15 @@ const GRAPH_ICON_SVG = `
   <line x1="8" y1="7.5" x2="10.5" y2="16.5"/>
   <line x1="16" y1="7.5" x2="13.5" y2="16.5"/>
   <line x1="8.5" y1="6" x2="15.5" y2="6"/>
+</svg>`;
+
+const DELETE_ICON_SVG = `
+<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <polyline points="3 6 5 6 21 6"/>
+  <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+  <path d="M10 11v6"/>
+  <path d="M14 11v6"/>
+  <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
 </svg>`;
 
 const paperListEl = document.getElementById('paperList');
@@ -53,8 +63,16 @@ function renderPaperList() {
     graphBtn.innerHTML = GRAPH_ICON_SVG;
     graphBtn.addEventListener('click', () => selectPaperGraph(slug));
 
+    const deleteBtn = document.createElement('button');
+    deleteBtn.type = 'button';
+    deleteBtn.className = 'paper-delete-btn';
+    deleteBtn.title = `${slug} 삭제`;
+    deleteBtn.innerHTML = DELETE_ICON_SVG;
+    deleteBtn.addEventListener('click', () => deletePaper(slug));
+
     row.appendChild(title);
     row.appendChild(graphBtn);
+    row.appendChild(deleteBtn);
     paperListEl.appendChild(row);
   }
 }
@@ -63,6 +81,37 @@ function selectPaperGraph(slug) {
   selectedPaperSlug = slug;
   renderPaperList();
   loadGraph(slug, true);
+}
+
+async function deletePaper(slug) {
+  if (!confirm(`"${slug}"를 삭제할까요?\nObsidian 노트와 Supabase에 저장된 사본이 모두 삭제되며 되돌릴 수 없습니다.`)) {
+    return;
+  }
+
+  let data;
+  try {
+    const res = await fetch(`/api/papers/${encodeURIComponent(slug)}`, { method: 'DELETE' });
+    data = await res.json();
+  } catch {
+    alert('삭제 요청에 실패했습니다.');
+    return;
+  }
+
+  if (data.local_error || data.remote_error) {
+    alert(
+      '일부 삭제에 실패했습니다.\n' +
+      (data.local_error ? `Obsidian: ${data.local_error}\n` : '') +
+      (data.remote_error ? `Supabase: ${data.remote_error}` : '')
+    );
+  }
+
+  if (selectedPaperSlug === slug) {
+    selectedPaperSlug = null;
+    loadGraph(null, false);
+  } else {
+    loadGraph(currentFocus, currentFocus !== null);
+  }
+  loadPaperList();
 }
 
 loadPaperList();

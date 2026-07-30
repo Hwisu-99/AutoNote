@@ -54,6 +54,15 @@ def upload_note(note_path: str, title_slug: str) -> str:
     return storage_path
 
 
+def delete_note(title_slug: str) -> None:
+    """Supabase Storage에서 해당 논문의 노트 파일을 삭제한다."""
+    bucket_name = os.getenv("SUPABASE_BUCKET", "autonote-notes")
+    storage_path = f"{title_slug}/{title_slug}.md"
+
+    client = _get_client()
+    client.storage.from_(bucket_name).remove([storage_path])
+
+
 def list_papers() -> list[str]:
     """Supabase Storage 버킷 루트의 폴더 목록(= 업로드된 논문 slug 목록)을 반환한다."""
     bucket_name = os.getenv("SUPABASE_BUCKET", "autonote-notes")
