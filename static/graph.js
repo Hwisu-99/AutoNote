@@ -19,6 +19,9 @@ toggleTagsInput.addEventListener('change', () => {
 
 async function loadGraph(focusSlug, onlyFocus = false) {
   currentFocus = onlyFocus ? focusSlug : null;
+  if (!onlyFocus) {
+    document.getElementById('graphSummary').innerHTML = '';
+  }
 
   const params = new URLSearchParams();
   if (focusSlug) params.set('focus', focusSlug);

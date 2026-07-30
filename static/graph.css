@@ -14,11 +14,14 @@
 }
 main { flex-shrink: 0; }
 
+.graph-column {
+  flex: 1 1 980px; min-width: 640px;
+  position: sticky; top: 64px;
+}
 #graphPanel {
-  flex: 1 1 980px; min-width: 640px; height: 620px;
+  height: 620px;
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
   box-shadow: var(--shadow); padding: 16px; display: flex; flex-direction: column;
-  position: sticky; top: 64px;
 }
 .graph-title { font-weight: 600; font-size: .9rem; color: var(--text-muted); margin-bottom: 8px; }
 .graph-hint { font-size: .78rem; color: var(--text-muted); margin-bottom: 10px; }
@@ -49,6 +52,7 @@ main { flex-shrink: 0; }
 .switch-wrap input:checked + .switch { background: var(--accent); }
 .switch-wrap input:checked + .switch::before { transform: translateX(14px); }
 #graphSvg { flex: 1; width: 100%; }
+#graphSummary:not(:empty) { margin-top: 16px; }
 
 .node-note { fill: var(--accent); stroke: var(--surface); stroke-width: 1.5px; cursor: grab; }
 .node-tag { fill: var(--tag-green); stroke: var(--surface); stroke-width: 1px; cursor: grab; }

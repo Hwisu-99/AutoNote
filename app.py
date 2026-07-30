@@ -156,6 +156,15 @@ async def get_papers():
         return {"papers": [], "error": str(exc)}
 
 
+@app.get("/api/papers/{slug}/summary")
+async def get_paper_summary(slug: str):
+    vault_path = get_vault_path()
+    summary_path = Path(vault_path) / "AutoNote" / slug / f"{slug}.summary.json"
+    if not summary_path.is_file():
+        raise HTTPException(status_code=404, detail="요약 정보를 찾을 수 없습니다.")
+    return json.loads(summary_path.read_text(encoding="utf-8"))
+
+
 @app.delete("/api/papers/{slug}")
 async def delete_paper(slug: str):
     vault_path = get_vault_path()
