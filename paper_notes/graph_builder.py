@@ -158,6 +158,15 @@ def build_graph(vault_path: str, focus_slug: str | None = None, only_focus: bool
                 keep_ids.add(e["target"])
             elif e["target"] == focus_slug:
                 keep_ids.add(e["source"])
+
+        # concept에 딸린 entity는 논문과 2촌(논문 -> concept -> entity)이라 위
+        # 1촌 필터에서 빠진다. focus의 concept 노드에 연결된 entity만 추가로
+        # 포함시킨다(다른 논문으로 확장되지 않도록 concept -> entity 에지로 한정).
+        concept_ids_in_focus = {nid for nid in keep_ids if nid.startswith("concept:")}
+        for e in edges:
+            if e["source"] in concept_ids_in_focus and e["target"].startswith("entity:"):
+                keep_ids.add(e["target"])
+
         nodes = [n for n in nodes if n["id"] in keep_ids]
         edges = [e for e in edges if e["source"] in keep_ids and e["target"] in keep_ids]
 
