@@ -163,7 +163,13 @@ async def summarize_paper(paper_text: str) -> tuple[dict, float]:
         model=MODEL,
         max_tokens=8000,
         system=SYSTEM_PROMPT,
-        output_config={"format": {"type": "json_schema", "schema": SCHEMA}},
+        # effort를 지정하지 않으면 claude-sonnet-5는 기본값(high)으로 adaptive
+        # thinking을 돌려 구조화 요약 작업치고 불필요한 thinking 토큰 비용이 붙는다.
+        # medium으로 낮춰 비용을 줄이되, 품질 저하가 보이면 다시 올릴 것.
+        output_config={
+            "format": {"type": "json_schema", "schema": SCHEMA},
+            "effort": "medium",
+        },
         messages=[
             {
                 "role": "user",
