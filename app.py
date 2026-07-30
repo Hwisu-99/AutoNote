@@ -17,9 +17,9 @@ from paper_notes.excalidraw_writer import write_diagram
 from paper_notes.extractor import extract_text
 from paper_notes.graph_builder import build_graph
 from paper_notes.obsidian_writer import delete_note as delete_local_note
-from paper_notes.obsidian_writer import write_note
+from paper_notes.obsidian_writer import write_note, write_summary_json
 from paper_notes.supabase_writer import delete_note as delete_remote_note
-from paper_notes.supabase_writer import list_papers, upload_note
+from paper_notes.supabase_writer import list_papers, upload_note, upload_summary
 from paper_notes.utils import slugify
 
 load_dotenv()
@@ -103,20 +103,25 @@ async def run_pipeline(tmp_path: str, vault_path: str, request: Request):
             supabase_error = str(exc)
             print(f"  [경고] Supabase 업로드 실패: {exc}")
 
-        yield _event(
-            "done",
-            100,
-            "완료!",
-            title=summary["title"],
-            one_line_summary=summary["one_line_summary"],
-            note_path=note_path,
-            excalidraw_filename=excalidraw_filename,
-            api_cost_usd=round(api_cost_usd, 4),
-            supabase_path=supabase_path,
-            supabase_error=supabase_error,
-            title_slug=title_slug,
-            node_summary=node_summary,
-        )
+        result = {
+            "title": summary["title"],
+            "one_line_summary": summary["one_line_summary"],
+            "note_path": note_path,
+            "excalidraw_filename": excalidraw_filename,
+            "api_cost_usd": round(api_cost_usd, 4),
+            "supabase_path": supabase_path,
+            "supabase_error": supabase_error,
+            "title_slug": title_slug,
+            "node_summary": node_summary,
+        }
+
+        summary_json_path = write_summary_json(vault_path, title_slug, result)
+        try:
+            upload_summary(summary_json_path, title_slug)
+        except Exception as exc:  # noqa: BLE001 - 업로드 실패는 파이프라인 전체를 실패시키지 않음
+            print(f"  [경고] 요약 JSON 업로드 실패: {exc}")
+
+        yield _event("done", 100, "완료!", **result)
     except Exception as exc:  # noqa: BLE001 - surface any failure to the UI
         yield _event("error", 100, f"오류: {exc}")
     finally:

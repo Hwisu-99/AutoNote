@@ -54,13 +54,31 @@ def upload_note(note_path: str, title_slug: str) -> str:
     return storage_path
 
 
-def delete_note(title_slug: str) -> None:
-    """Supabase Storage에서 해당 논문의 노트 파일을 삭제한다."""
+def upload_summary(json_path: str, title_slug: str) -> str:
+    """생성된 처리 결과 요약 JSON을 Supabase Storage 버킷에 업로드하고, 버킷 내 경로를 반환한다."""
     bucket_name = os.getenv("SUPABASE_BUCKET", "autonote-notes")
-    storage_path = f"{title_slug}/{title_slug}.md"
+    storage_path = f"{title_slug}/{title_slug}.summary.json"
+
+    with open(json_path, "rb") as f:
+        content = f.read()
 
     client = _get_client()
-    client.storage.from_(bucket_name).remove([storage_path])
+    client.storage.from_(bucket_name).upload(
+        storage_path,
+        content,
+        file_options={"content-type": "application/json", "upsert": "true"},
+    )
+
+    return storage_path
+
+
+def delete_note(title_slug: str) -> None:
+    """Supabase Storage에서 해당 논문의 노트 파일과 요약 JSON을 삭제한다."""
+    bucket_name = os.getenv("SUPABASE_BUCKET", "autonote-notes")
+    client = _get_client()
+    client.storage.from_(bucket_name).remove(
+        [f"{title_slug}/{title_slug}.md", f"{title_slug}/{title_slug}.summary.json"]
+    )
 
 
 def list_papers() -> list[str]:

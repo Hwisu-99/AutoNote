@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 
@@ -112,8 +113,19 @@ def write_note(vault_path: str, summary: dict, title_slug: str, excalidraw_filen
     return str(note_path)
 
 
+def write_summary_json(vault_path: str, title_slug: str, payload: dict) -> str:
+    """프론트에 표시되는 처리 결과(API 비용, 생성된 노드 요약 등)를 .md와 같은
+    폴더에 JSON으로 저장하고, 저장된 파일 경로를 반환한다."""
+    folder = Path(vault_path) / "AutoNote" / title_slug
+    folder.mkdir(parents=True, exist_ok=True)
+
+    path = folder / f"{title_slug}.summary.json"
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return str(path)
+
+
 def delete_note(vault_path: str, title_slug: str) -> None:
-    """vault에서 해당 논문 폴더(.md + .excalidraw)를 통째로 삭제한다."""
+    """vault에서 해당 논문 폴더(.md + .excalidraw + 요약 JSON)를 통째로 삭제한다."""
     folder = Path(vault_path) / "AutoNote" / title_slug
     if folder.is_dir():
         shutil.rmtree(folder)
