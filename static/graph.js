@@ -5,10 +5,17 @@
 const graphSvg = d3.select('#graphSvg');
 const graphTitleEl = document.getElementById('graphTitle');
 const btnFullGraph = document.getElementById('btnFullGraph');
+const toggleTagsInput = document.getElementById('toggleTags');
 let simulation = null;
 let currentFocus = null;
+let currentGraphData = null;
+let hideTagNodes = !toggleTagsInput.checked;
 
 btnFullGraph.addEventListener('click', () => loadGraph(null, false));
+toggleTagsInput.addEventListener('change', () => {
+  hideTagNodes = !toggleTagsInput.checked;
+  if (currentGraphData) renderGraph(currentGraphData);
+});
 
 async function loadGraph(focusSlug, onlyFocus = false) {
   currentFocus = onlyFocus ? focusSlug : null;
@@ -34,6 +41,7 @@ async function loadGraph(focusSlug, onlyFocus = false) {
     graphTitleEl.textContent = 'Knowledge Graph';
   }
 
+  currentGraphData = data;
   renderGraph(data);
 }
 
@@ -51,8 +59,14 @@ function renderGraph(data) {
     d3.zoom().scaleExtent([0.3, 3]).on('zoom', (event) => g.attr('transform', event.transform))
   );
 
-  const nodes = data.nodes.map((n) => ({ ...n }));
-  const links = data.edges.map((e) => ({ ...e }));
+  const visibleNodes = hideTagNodes ? data.nodes.filter((n) => n.type !== 'tag') : data.nodes;
+  const visibleIds = new Set(visibleNodes.map((n) => n.id));
+  const visibleEdges = hideTagNodes
+    ? data.edges.filter((e) => visibleIds.has(e.source) && visibleIds.has(e.target))
+    : data.edges;
+
+  const nodes = visibleNodes.map((n) => ({ ...n }));
+  const links = visibleEdges.map((e) => ({ ...e }));
 
   simulation = d3.forceSimulation(nodes)
     .force('link', d3.forceLink(links).id((d) => d.id).distance(70).strength(0.4))
