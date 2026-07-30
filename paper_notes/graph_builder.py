@@ -5,7 +5,7 @@ from pathlib import Path
 
 import yaml
 
-from paper_notes.dedup import dedupe_labels, normalize_label
+from paper_notes.dedup import dedupe_labels
 
 # Obsidian wikilink syntax: [[target]], [[target|alias]], embeds !\[\[target]]
 _WIKILINK_RE = re.compile(r"!?\[\[([^\]|#]+)(?:\|[^\]]+)?\]\]")
@@ -105,7 +105,7 @@ def build_graph(vault_path: str, focus_slug: str | None = None, only_focus: bool
 
         for concept_label in n["concepts"]:
             canonical = concept_canon.get(concept_label, concept_label)
-            concept_id = f"concept:{normalize_label(canonical)}"
+            concept_id = f"concept:{canonical}"
             if concept_id not in seen_concept_nodes:
                 nodes.append({"id": concept_id, "label": canonical, "type": "concept"})
                 seen_concept_nodes.add(concept_id)
@@ -113,7 +113,7 @@ def build_graph(vault_path: str, focus_slug: str | None = None, only_focus: bool
 
         for entity in n["entities"]:
             entity_canonical = entity_canon.get(entity["label"], entity["label"])
-            entity_id = f"entity:{normalize_label(entity_canonical)}"
+            entity_id = f"entity:{entity_canonical}"
             if entity_id not in seen_entity_nodes:
                 nodes.append({"id": entity_id, "label": entity_canonical, "type": "entity"})
                 seen_entity_nodes.add(entity_id)
@@ -121,7 +121,7 @@ def build_graph(vault_path: str, focus_slug: str | None = None, only_focus: bool
             concept_label = entity.get("concept")
             if concept_label:
                 canonical = concept_canon.get(concept_label, concept_label)
-                concept_id = f"concept:{normalize_label(canonical)}"
+                concept_id = f"concept:{canonical}"
                 if concept_id not in seen_concept_nodes:
                     nodes.append({"id": concept_id, "label": canonical, "type": "concept"})
                     seen_concept_nodes.add(concept_id)
@@ -138,7 +138,7 @@ def build_graph(vault_path: str, focus_slug: str | None = None, only_focus: bool
 
             # 하위 호환: concepts/entities frontmatter가 없던 이전 노트를 위한 fallback
             canonical = concept_canon.get(target, target)
-            concept_id = f"concept:{normalize_label(canonical)}"
+            concept_id = f"concept:{canonical}"
             if concept_id not in seen_concept_nodes:
                 nodes.append({"id": concept_id, "label": canonical, "type": "concept"})
                 seen_concept_nodes.add(concept_id)
