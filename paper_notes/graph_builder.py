@@ -104,7 +104,7 @@ def build_graph(vault_path: str, focus_slug: str | None = None, only_focus: bool
         claimed = set(n["concepts"]) | {e["label"] for e in n["entities"]}
 
         for concept_label in n["concepts"]:
-            canonical = concept_canon.get(concept_label, concept_label)
+            canonical = concept_canon[concept_label]
             concept_id = f"concept:{canonical}"
             if concept_id not in seen_concept_nodes:
                 nodes.append({"id": concept_id, "label": canonical, "type": "concept"})
@@ -112,7 +112,7 @@ def build_graph(vault_path: str, focus_slug: str | None = None, only_focus: bool
             edges.append({"source": n["slug"], "target": concept_id, "type": "link"})
 
         for entity in n["entities"]:
-            entity_canonical = entity_canon.get(entity["label"], entity["label"])
+            entity_canonical = entity_canon[entity["label"]]
             entity_id = f"entity:{entity_canonical}"
             if entity_id not in seen_entity_nodes:
                 nodes.append({"id": entity_id, "label": entity_canonical, "type": "entity"})
@@ -120,7 +120,7 @@ def build_graph(vault_path: str, focus_slug: str | None = None, only_focus: bool
 
             concept_label = entity.get("concept")
             if concept_label:
-                canonical = concept_canon.get(concept_label, concept_label)
+                canonical = concept_canon[concept_label]
                 concept_id = f"concept:{canonical}"
                 if concept_id not in seen_concept_nodes:
                     nodes.append({"id": concept_id, "label": canonical, "type": "concept"})
@@ -137,7 +137,7 @@ def build_graph(vault_path: str, focus_slug: str | None = None, only_focus: bool
                 continue  # frontmatter의 concepts/entities로 이미 처리됨
 
             # 하위 호환: concepts/entities frontmatter가 없던 이전 노트를 위한 fallback
-            canonical = concept_canon.get(target, target)
+            canonical = concept_canon[target]
             concept_id = f"concept:{canonical}"
             if concept_id not in seen_concept_nodes:
                 nodes.append({"id": concept_id, "label": canonical, "type": "concept"})
