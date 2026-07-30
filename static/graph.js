@@ -93,6 +93,56 @@ function renderGraph(data) {
     node.attr('cx', (d) => d.x).attr('cy', (d) => d.y);
     label.attr('x', (d) => d.x).attr('y', (d) => d.y);
   });
+
+  // 노드 클릭 시 그 노드 + 직접 연결된 이웃/에지만 강조하고 나머지는 흐리게(Obsidian
+  // 그래프 뷰의 하이라이트 동작). 이미 강조된 노드를 다시 클릭하거나 빈 배경을
+  // 클릭하면 원상복구한다.
+  let activeNodeId = null;
+
+  function endpointId(end) {
+    return typeof end === 'object' ? end.id : end;
+  }
+
+  function neighborsOf(id) {
+    const related = new Set([id]);
+    links.forEach((l) => {
+      const s = endpointId(l.source);
+      const t = endpointId(l.target);
+      if (s === id) related.add(t);
+      if (t === id) related.add(s);
+    });
+    return related;
+  }
+
+  function clearHighlight() {
+    activeNodeId = null;
+    node.classed('is-active', false).classed('is-dimmed', false);
+    link.classed('is-highlighted', false).classed('is-dimmed', false);
+    label.classed('is-dimmed', false);
+  }
+
+  function highlightNode(d) {
+    if (activeNodeId === d.id) {
+      clearHighlight();
+      return;
+    }
+    activeNodeId = d.id;
+    const related = neighborsOf(d.id);
+
+    node
+      .classed('is-active', (n) => n.id === d.id)
+      .classed('is-dimmed', (n) => !related.has(n.id));
+    link
+      .classed('is-highlighted', (l) => endpointId(l.source) === d.id || endpointId(l.target) === d.id)
+      .classed('is-dimmed', (l) => endpointId(l.source) !== d.id && endpointId(l.target) !== d.id);
+    label.classed('is-dimmed', (n) => !related.has(n.id));
+  }
+
+  node.on('click', (event, d) => {
+    event.stopPropagation();
+    highlightNode(d);
+  });
+  graphSvg.on('click', clearHighlight);
 }
 
 function drag(sim) {

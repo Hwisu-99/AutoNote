@@ -39,3 +39,15 @@ main { flex-shrink: 0; }
 .node-entity { fill: var(--text-muted); stroke: var(--surface); stroke-width: 1px; cursor: grab; }
 .graph-label { fill: var(--text-muted); font-size: 10px; pointer-events: none; user-select: none; }
 .graph-link { stroke: var(--border); stroke-opacity: .7; }
+
+/* 노드 클릭 하이라이트: 클릭한 노드+직접 연결된 이웃만 남기고 나머지는 흐리게 */
+#graphSvg circle, #graphSvg .graph-link, #graphSvg .graph-label {
+  transition: opacity .15s ease, stroke-opacity .15s ease, stroke-width .15s ease;
+}
+.node-note.is-active, .node-tag.is-active, .node-concept.is-active, .node-entity.is-active {
+  stroke: var(--accent); stroke-width: 2.5px;
+}
+.graph-link.is-highlighted { stroke: var(--accent); stroke-opacity: .9; stroke-width: 2px; }
+circle.is-dimmed { opacity: .15; }
+.graph-link.is-dimmed { stroke-opacity: .08; }
+.graph-label.is-dimmed { opacity: .15; }
