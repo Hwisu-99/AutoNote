@@ -89,6 +89,11 @@ async def run_pipeline(tmp_path: str, vault_path: str, request: Request):
         yield _event("note", 90, "Obsidian 노트 저장 중...")
         note_path = write_note(vault_path, summary, title_slug, excalidraw_filename)
 
+        focus_graph = build_graph(vault_path, title_slug, only_focus=True)
+        node_summary: dict[str, list[str]] = {}
+        for node in focus_graph["nodes"]:
+            node_summary.setdefault(node["type"], []).append(node["label"])
+
         yield _event("upload", 95, "Supabase Storage에 노트 업로드 중...")
         supabase_path: str | None = None
         supabase_error: str | None = None
@@ -110,6 +115,7 @@ async def run_pipeline(tmp_path: str, vault_path: str, request: Request):
             supabase_path=supabase_path,
             supabase_error=supabase_error,
             title_slug=title_slug,
+            node_summary=node_summary,
         )
     except Exception as exc:  # noqa: BLE001 - surface any failure to the UI
         yield _event("error", 100, f"오류: {exc}")

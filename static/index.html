@@ -249,6 +249,19 @@ cancelBtn.addEventListener('click', () => {
   abortController?.abort();
 });
 
+const NODE_TYPE_LABELS = { note: '논문', concept: '개념', entity: '용어', tag: '태그' };
+
+function renderNodeSummaryRows(nodeSummary) {
+  if (!nodeSummary) return '';
+  return Object.keys(NODE_TYPE_LABELS)
+    .filter((type) => nodeSummary[type] && nodeSummary[type].length > 0)
+    .map((type) => {
+      const names = nodeSummary[type].join(', ');
+      return `<div class="meta-row"><span>${NODE_TYPE_LABELS[type]} (${nodeSummary[type].length})</span><code>${names}</code></div>`;
+    })
+    .join('');
+}
+
 function setProgress(percent, message, done = false) {
   progressWrap.style.display = 'block';
   progressFill.style.width = `${percent}%`;
@@ -310,6 +323,7 @@ async function handleFile(file) {
               <div class="meta-row"><span>개념도</span><code>${evt.excalidraw_filename}</code></div>
               <div class="meta-row"><span>API 비용</span><code>$${evt.api_cost_usd.toFixed(4)}</code></div>
               <div class="meta-row"><span>Supabase</span><code>${evt.supabase_path ? evt.supabase_path : ('업로드 실패: ' + evt.supabase_error)}</code></div>
+              ${renderNodeSummaryRows(evt.node_summary)}
             </div>`;
           loadGraph(evt.title_slug, false);
           selectedPaperSlug = evt.title_slug;
