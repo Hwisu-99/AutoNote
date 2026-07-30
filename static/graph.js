@@ -6,6 +6,9 @@ const graphSvg = d3.select('#graphSvg');
 const graphTitleEl = document.getElementById('graphTitle');
 const btnFullGraph = document.getElementById('btnFullGraph');
 const toggleTagsInput = document.getElementById('toggleTags');
+const toggleExpandInput = document.getElementById('toggleExpand');
+const graphColumnEl = document.querySelector('.graph-column');
+const graphPanelEl = document.getElementById('graphPanel');
 let simulation = null;
 let currentFocus = null;
 let currentGraphData = null;
@@ -14,6 +17,21 @@ let hideTagNodes = !toggleTagsInput.checked;
 btnFullGraph.addEventListener('click', () => loadGraph(null, false));
 toggleTagsInput.addEventListener('change', () => {
   hideTagNodes = !toggleTagsInput.checked;
+  if (currentGraphData) renderGraph(currentGraphData);
+});
+
+// 확대 시 사이드바/업로드 영역을 숨기고, 지금까지 그래프 박스+요약 카드가 차지하던
+// 세로 공간을 그래프 박스 하나가 그대로 이어받도록 높이를 고정값으로 잡아준다.
+// 다시 누르면 원래 높이(620px, CSS 기본값)로 복귀한다.
+toggleExpandInput.addEventListener('change', () => {
+  if (toggleExpandInput.checked) {
+    const expandedHeight = graphColumnEl.getBoundingClientRect().height;
+    document.body.classList.add('graph-expanded');
+    graphPanelEl.style.height = `${expandedHeight}px`;
+  } else {
+    document.body.classList.remove('graph-expanded');
+    graphPanelEl.style.height = '';
+  }
   if (currentGraphData) renderGraph(currentGraphData);
 });
 

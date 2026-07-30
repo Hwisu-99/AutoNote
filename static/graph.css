@@ -54,6 +54,12 @@ main { flex-shrink: 0; }
 #graphSvg { flex: 1; width: 100%; }
 #graphSummary:not(:empty) { margin-top: 16px; }
 
+body.graph-expanded #paperListPanel,
+body.graph-expanded main,
+body.graph-expanded #graphSummary {
+  display: none;
+}
+
 .node-note, .node-tag, .node-concept, .node-entity { transition: opacity .15s ease; }
 .node-note { fill: var(--accent); stroke: var(--surface); stroke-width: 1.5px; cursor: grab; }
 .node-tag { fill: var(--tag-green); stroke: var(--surface); stroke-width: 1px; cursor: grab; }
