@@ -2,3 +2,6 @@
 venv/
 __pycache__/
 *.pyc
+
+# 클로드 테스트용 임시 폴더. 실제 배포 시에는 필요 없음
+/offline_test
