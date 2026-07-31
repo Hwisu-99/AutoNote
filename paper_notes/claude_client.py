@@ -4,6 +4,8 @@ import json
 
 import anthropic
 
+from paper_notes.extractor import extract_front_matter
+
 MODEL = "claude-sonnet-5"
 
 # USD per 1M tokens (input, output). claude-sonnet-5 uses intro pricing
@@ -38,12 +40,69 @@ def _calculate_cost_usd(usage, model: str) -> float:
         + (usage.cache_read_input_tokens or 0) * cache_read_per_token
     )
 
+
 SYSTEM_PROMPT = (
     "You are a research assistant that reads academic papers and produces a "
     "structured, faithful summary in Korean. Be precise and avoid inventing "
     "details not present in the text."
 )
 
+# 1차 호출: Abstract/Introduction/Conclusion/Figure caption만 보고 이 논문이
+# 스스로 제시하는 핵심 concept만 뽑는다. 본문 전체를 아직 안 보여주기 때문에
+# 선행 연구/비교 대상 개념(예: 이 논문이 개선하는 이전 모델)이 애초에 concept
+# 후보로 뽑힐 일이 없다 — "concept에서 제외하라"는 지시보다 훨씬 확실하다.
+CONCEPT_SYSTEM_PROMPT = (
+    "당신은 지식 그래프(Knowledge Graph) 구축을 위한 논문 분석 전문가입니다. "
+    "전달된 텍스트는 논문의 초반부(Abstract/Summary/Overview, "
+    "Introduction/Background)와 후반부(Conclusion/Discussion/Concluding Remarks), "
+    "그리고 Figure 캡션으로 구성되어 있습니다. 학술지·컨퍼런스 템플릿마다 "
+    "소제목 표기가 달라 텍스트에 붙은 ## 레이블이 정확하지 않을 수 있으니, "
+    "레이블 자체보다 내용을 보고 이 논문이 스스로 제시하는 핵심 concept만 "
+    "판단하십시오."
+)
+
+CONCEPT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "concepts": {
+            "type": "array",
+            "description": (
+                "이 논문이 스스로 제시하는 핵심 개념만 3~7개. 논문이 해결하려는 "
+                "핵심 문제, 독자적으로 제안하는 아키텍처/방법론, 주요 기여점만 "
+                "포함할 것. 기존 연구/베이스라인/관련 연구에서 유래한 개념은 "
+                "아무리 비중 있게 다뤄져도 절대 포함하지 말 것(그건 다음 단계에서 "
+                "entity로 처리된다). Figure 캡션이나 소제목에 언급되지 않고 "
+                "단발성으로만 등장하는 개념도 제외할 것. 각 label은 원문 표현을 "
+                "최대한 그대로 사용할 것."
+            ),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "label": {"type": "string", "description": "20자 이내로 짧게"},
+                    "category": {
+                        "type": "string",
+                        "enum": ["input", "process", "result", "limitation", "other"],
+                        "description": (
+                            "input=데이터/입력, process=방법론/모델 구성요소, "
+                            "result=결과/성과, limitation=한계/향후과제, other=기타"
+                        ),
+                    },
+                },
+                "required": ["id", "label", "category"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["concepts"],
+    "additionalProperties": False,
+}
+
+# 2차 호출: 논문 전문 + 1차에서 확정된 concept 목록을 보고 요약 본문 전체와
+# entity를 뽑는다. 동시에 본문 전체 기준으로 각 concept이 실제로 소제목/반복
+# 언급 등으로 뒷받침되는지 재검증해서, 근거가 약한 concept은
+# demoted_concept_ids로 표시한다 — 이 목록에 오른 concept은 claude_client에서
+# entity로 강등 처리한다.
 SCHEMA = {
     "type": "object",
     "properties": {
@@ -73,40 +132,12 @@ SCHEMA = {
         "results": {"type": "string"},
         "limitations": {"type": "string"},
         "tags": {"type": "array", "items": {"type": "string"}},
-        "concepts": {
-            "type": "array",
-            "description": (
-                "다이어그램에 들어갈 핵심 개념 노드. 먼저 Abstract/Introduction/Conclusion에서 "
-                "이 논문이 스스로 제시하는 핵심 개념 후보를 파악하고, 그 다음 본문 전체"
-                "(Method/Experiments 등)에서 그 후보들이 실제로 반복적으로 다뤄지는지 확인한 "
-                "뒤 최종 목록을 정할 것. 반드시 이 논문이 새로 제시/기여하는 것만 포함하고, "
-                "이 논문이 비교하거나 개선하는 대상인 선행 연구의 개념·모델·프레임워크 자체는 "
-                "concept에 넣지 말고 entities 배열에 넣을 것 (예: 이 논문이 개선하는 이전 "
-                "모델 이름은 concept이 아니라 entity). 각 label은 논문 원문에 실제로 등장하는 "
-                "표현을 최대한 그대로 사용하고, 지어내거나 과도하게 의역하지 말 것. 6~8개 "
-                "정도로 제한."
-            ),
-            "items": {
-                "type": "object",
-                "properties": {
-                    "id": {"type": "string"},
-                    "label": {"type": "string", "description": "20자 이내로 짧게"},
-                    "category": {
-                        "type": "string",
-                        "enum": ["input", "process", "result", "limitation", "other"],
-                        "description": (
-                            "input=데이터/입력, process=방법론/모델 구성요소, "
-                            "result=결과/성과, limitation=한계/향후과제, other=기타"
-                        ),
-                    },
-                },
-                "required": ["id", "label", "category"],
-                "additionalProperties": False,
-            },
-        },
         "relationships": {
             "type": "array",
-            "description": "개념 노드 간의 관계 (화살표). 논리적 흐름(입력→처리→결과) 순서를 반영할 것.",
+            "description": (
+                "개념 노드 간의 관계 (화살표). 논리적 흐름(입력→처리→결과) 순서를 "
+                "반영할 것. from_id/to_id는 위에서 주어진 확정 concept 목록의 id만 사용할 것."
+            ),
             "items": {
                 "type": "object",
                 "properties": {
@@ -121,14 +152,14 @@ SCHEMA = {
         "entities": {
             "type": "array",
             "description": (
-                "논문에 등장하는 구체적인 용어/기법/모델명 등 세부 단어 노드. concepts에서 "
-                "제외된, 이 논문이 비교·개선 대상으로 삼는 선행 연구의 개념·모델·프레임워크명도 "
-                "반드시 여기 포함할 것 — 그 개념을 다루는 다른 논문과의 연결고리 역할을 하므로 "
-                "빠뜨리면 안 된다. 그 외 구체적 용어/기법/데이터셋/벤치마크명도 포함하되, "
-                "반드시 논문 원문에 실제로 등장하는 표현만 사용하고 지어내거나 일반화하지 "
-                "말 것. 최대 20개까지 허용하되, 논문에 그만큼 없다면 억지로 채우지 말 것. "
-                "concept_id를 지정하면 concepts 배열의 해당 개념과 연결되고, 특정 개념에 "
-                "속하지 않는 독립적인 용어면 concept_id를 null로 둘 것."
+                "논문 본문 전체를 스캔해서, 주어진 concept들을 뒷받침/구체화하는 세부 "
+                "모듈·알고리즘·데이터셋·평가지표·하이퍼파라미터, 그리고 이 논문이 "
+                "비교·개선 대상으로 삼는 선행 연구의 개념·모델·프레임워크명을 최대 "
+                "20개까지 뽑을 것 (논문에 그만큼 없다면 억지로 채우지 말 것). 각 "
+                "label은 논문 원문에 실제로 등장하는 표현만 사용하고 지어내거나 "
+                "일반화하지 말 것. concept_id를 지정하면 주어진 concept 목록의 해당 "
+                "id와 연결되고, 특정 concept에 속하지 않는 독립적인 용어면 "
+                "concept_id를 null로 둘 것."
             ),
             "items": {
                 "type": "object",
@@ -136,12 +167,21 @@ SCHEMA = {
                     "label": {"type": "string", "description": "15자 이내로 짧게"},
                     "concept_id": {
                         "anyOf": [{"type": "string"}, {"type": "null"}],
-                        "description": "concepts 배열의 id 중 하나. 없으면 null",
+                        "description": "주어진 concept 목록의 id 중 하나. 없으면 null",
                     },
                 },
                 "required": ["label", "concept_id"],
                 "additionalProperties": False,
             },
+        },
+        "demoted_concept_ids": {
+            "type": "array",
+            "description": (
+                "주어진 concept 목록 중, 본문 전체를 확인했을 때 소제목으로 쓰이지 "
+                "않거나 언급 비중이 미미해서 핵심 concept 자격이 없다고 판단되는 "
+                "concept의 id 목록. 없으면 빈 배열."
+            ),
+            "items": {"type": "string"},
         },
     },
     "required": [
@@ -156,17 +196,39 @@ SCHEMA = {
         "results",
         "limitations",
         "tags",
-        "concepts",
         "relationships",
         "entities",
+        "demoted_concept_ids",
     ],
     "additionalProperties": False,
 }
 
 
+async def _extract_concepts(client: anthropic.AsyncAnthropic, paper_text: str) -> tuple[list[dict], float]:
+    front_matter = extract_front_matter(paper_text)
+    response = await client.messages.create(
+        model=MODEL,
+        max_tokens=2000,
+        system=CONCEPT_SYSTEM_PROMPT,
+        output_config={"format": {"type": "json_schema", "schema": CONCEPT_SCHEMA}, "effort": "medium"},
+        messages=[{"role": "user", "content": front_matter}],
+    )
+    text = next(b.text for b in response.content if b.type == "text")
+    concepts = json.loads(text)["concepts"]
+    cost_usd = _calculate_cost_usd(response.usage, response.model)
+    return concepts, cost_usd
+
+
 async def summarize_paper(paper_text: str) -> tuple[dict, float]:
-    """논문을 요약하고 (요약 결과, 이번 호출의 API 비용(USD))를 반환한다."""
+    """논문을 요약하고 (요약 결과, 이번 호출들의 총 API 비용(USD))를 반환한다.
+
+    1차 호출로 Abstract/Intro/Conclusion/Figure caption만 보고 핵심 concept을
+    먼저 확정한 뒤, 2차 호출에서 논문 전문 + 확정된 concept 목록을 보고 나머지
+    요약/entity를 뽑으면서 concept이 실제로 본문에서 뒷받침되는지 재검증한다."""
     client = anthropic.AsyncAnthropic()
+
+    concepts, concept_cost = await _extract_concepts(client, paper_text)
+    concepts_json = json.dumps(concepts, ensure_ascii=False)
 
     response = await client.messages.create(
         model=MODEL,
@@ -183,8 +245,11 @@ async def summarize_paper(paper_text: str) -> tuple[dict, float]:
             {
                 "role": "user",
                 "content": (
-                    "다음 논문 전문을 분석해서 구조화된 요약을 만들어줘.\n\n"
-                    f"{paper_text}"
+                    "다음 논문 전문을 분석해서 구조화된 요약을 만들어줘. 아래는 이미 "
+                    "확정된 핵심 concept 목록이니 참고해서 entity를 연결하고, "
+                    "본문 근거가 약한 concept이 있으면 demoted_concept_ids로 표시해줘.\n\n"
+                    f"[확정된 concept 목록]\n{concepts_json}\n\n"
+                    f"[논문 전문]\n{paper_text}"
                 ),
             }
         ],
@@ -192,5 +257,24 @@ async def summarize_paper(paper_text: str) -> tuple[dict, float]:
 
     text = next(b.text for b in response.content if b.type == "text")
     summary = json.loads(text)
-    cost_usd = _calculate_cost_usd(response.usage, response.model)
-    return summary, cost_usd
+    main_cost = _calculate_cost_usd(response.usage, response.model)
+
+    demoted_ids = set(summary.pop("demoted_concept_ids", []))
+    final_concepts = [c for c in concepts if c["id"] not in demoted_ids]
+    demoted_labels = [c["label"] for c in concepts if c["id"] in demoted_ids]
+
+    entities = summary.get("entities", [])
+    existing_entity_labels = {e["label"] for e in entities}
+    for label in demoted_labels:
+        if label not in existing_entity_labels:
+            entities.append({"label": label, "concept_id": None})
+
+    summary["concepts"] = final_concepts
+    summary["entities"] = entities
+    summary["relationships"] = [
+        r
+        for r in summary.get("relationships", [])
+        if r["from_id"] not in demoted_ids and r["to_id"] not in demoted_ids
+    ]
+
+    return summary, concept_cost + main_cost
