@@ -84,7 +84,14 @@ function renderGraph(data) {
 
   const g = graphSvg.append('g');
   graphSvg.call(
-    d3.zoom().scaleExtent([0.3, 3]).on('zoom', (event) => g.attr('transform', event.transform))
+    d3.zoom()
+      .scaleExtent([0.3, 3])
+      // 팬 가능 범위를 캔버스 크기 기준으로 제한한다. 제한이 없으면 마우스처럼
+      // 한 동작에 큰 픽셀 이동량이 들어오는 입력 장치에서 그래프 전체가 뷰포트
+      // 밖으로 팬되어 "사라진 것처럼" 보이는 문제가 있었다(트랙패드는 이동
+      // 거리가 작아 잘 드러나지 않았음).
+      .translateExtent([[-width, -height], [width * 2, height * 2]])
+      .on('zoom', (event) => g.attr('transform', event.transform))
   );
 
   const visibleNodes = hideTagNodes ? data.nodes.filter((n) => n.type !== 'tag') : data.nodes;
