@@ -36,6 +36,7 @@ def write_note(vault_path: str, summary: dict, title_slug: str, excalidraw_filen
         {
             "label": e["label"],
             "concept": concept_label_by_id.get(e.get("concept_id")) if e.get("concept_id") else None,
+            "aliases": e.get("aliases", []),
         }
         for e in entities
     ]
@@ -58,7 +59,7 @@ def write_note(vault_path: str, summary: dict, title_slug: str, excalidraw_filen
         "title": summary["title"],
         "authors": summary["authors"],
         "tags": summary.get("tags", []),
-        "concepts": [c["label"] for c in concepts],
+        "concepts": [{"label": c["label"], "aliases": c.get("aliases", [])} for c in concepts],
         "entities": entities_frontmatter,
     }
     frontmatter_yaml = yaml.safe_dump(frontmatter, allow_unicode=True, sort_keys=False).strip()

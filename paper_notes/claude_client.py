@@ -88,8 +88,21 @@ CONCEPT_SCHEMA = {
                             "result=결과/성과, limitation=한계/향후과제, other=기타"
                         ),
                     },
+                    "aliases": {
+                        "type": "array",
+                        "description": (
+                            "이 개념과 정확히 같은 대상을 가리키는 다른 표기·약어만 "
+                            "(예: 'Self-Attention'과 'Self-Attention Mechanism'처럼 "
+                            "완전히 동일한 지시 대상의 표기 차이). 상위 개념, 하위 "
+                            "개념, 범위가 다른 유사 개념, 관련 기법은 절대 포함하지 "
+                            "말 것(예: 'Attention Mechanism'은 'Self-Attention'보다 "
+                            "큰 범주이므로 alias가 아니다). 논문에 실제로 등장하는 "
+                            "표현만 쓰고, 애매하면 빈 배열로 둘 것. 최대 3개."
+                        ),
+                        "items": {"type": "string"},
+                    },
                 },
-                "required": ["id", "label", "category"],
+                "required": ["id", "label", "category", "aliases"],
                 "additionalProperties": False,
             },
         },
@@ -169,8 +182,18 @@ SCHEMA = {
                         "anyOf": [{"type": "string"}, {"type": "null"}],
                         "description": "주어진 concept 목록의 id 중 하나. 없으면 null",
                     },
+                    "aliases": {
+                        "type": "array",
+                        "description": (
+                            "이 entity와 정확히 같은 대상을 가리키는 다른 표기·약어만 "
+                            "(완전히 동일한 지시 대상의 표기 차이만, 상위/하위/유사 "
+                            "개념은 제외). 논문에 실제로 등장하는 표현만. 애매하면 "
+                            "빈 배열. 최대 3개."
+                        ),
+                        "items": {"type": "string"},
+                    },
                 },
-                "required": ["label", "concept_id"],
+                "required": ["label", "concept_id", "aliases"],
                 "additionalProperties": False,
             },
         },
@@ -261,13 +284,15 @@ async def summarize_paper(paper_text: str) -> tuple[dict, float]:
 
     demoted_ids = set(summary.pop("demoted_concept_ids", []))
     final_concepts = [c for c in concepts if c["id"] not in demoted_ids]
-    demoted_labels = [c["label"] for c in concepts if c["id"] in demoted_ids]
+    demoted_concepts = [c for c in concepts if c["id"] in demoted_ids]
 
     entities = summary.get("entities", [])
     existing_entity_labels = {e["label"] for e in entities}
-    for label in demoted_labels:
-        if label not in existing_entity_labels:
-            entities.append({"label": label, "concept_id": None})
+    for c in demoted_concepts:
+        if c["label"] not in existing_entity_labels:
+            entities.append(
+                {"label": c["label"], "concept_id": None, "aliases": c.get("aliases", [])}
+            )
 
     summary["concepts"] = final_concepts
     summary["entities"] = entities

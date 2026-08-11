@@ -106,6 +106,7 @@ class _UnionFind:
 
 def dedupe_labels(
     labels: set[str],
+    aliases: dict[str, list[str]] | None = None,
     threshold: float = _DEFAULT_THRESHOLD,
     num_perm: int = _NUM_PERM,
 ) -> dict[str, str]:
@@ -114,9 +115,19 @@ def dedupe_labels(
     호출자는 이 매핑으로 concept/entity 노드의 ID와 표시 라벨을 결정한다. 같은
     정규화 키를 가진 라벨은 항상 병합되고, 정규화 키가 다르더라도 MinHash 자카드
     유사도가 threshold 이상이면 병합된다(숫자 토큰이 다른 쌍은 예외).
+
+    aliases는 {원본 라벨: [동의어, ...]} 형태로, Claude가 논문 본문을 보고 직접
+    판단한 "완전히 같은 대상을 가리키는 다른 표기"다. "Self-Attention"과
+    "Self Attention Mechanism"처럼 포함 관계인 라벨은 3-gram 자카드 유사도가
+    구조적으로 낮게 나와(길이가 다를수록 합집합이 커짐) threshold를 낮추지 않는
+    한 병합되지 않는데, threshold를 낮추면 이번엔 "batch/layer normalization"처럼
+    무관한 개념까지 오탐 병합되는 위험이 커진다. alias는 이 문제를 문자열 유사도가
+    아니라 모델의 문맥 판단으로 우회한다 - 두 라벨이 같은 alias(혹은 서로의 라벨
+    그 자체)를 공유하면 병합한다.
     """
     if not labels:
         return {}
+    aliases = aliases or {}
 
     groups: dict[str, list[str]] = {}
     for label in labels:
@@ -138,6 +149,24 @@ def dedupe_labels(
                 continue
             if jaccard_estimate(signatures[key_a], signatures[key_b]) >= threshold:
                 uf.union(key_a, key_b)
+
+    # alias 기반 병합: alias 텍스트 자체는 노드가 아니라 두 라벨을 잇는 매개일
+    # 뿐이다. 같은 alias를 처음 주장한 라벨 키를 기억해뒀다가, 나중에 같은
+    # alias를 대는 다른 라벨이 나오면 그 라벨과 union한다. alias가 vault에
+    # 이미 존재하는 다른 라벨의 표기 그 자체인 경우도 곧바로 union한다.
+    alias_claimed_by: dict[str, str] = {}
+    for label in labels:
+        label_key = normalize_label(label)
+        for alias in aliases.get(label, []):
+            alias_key = normalize_label(alias)
+            if not alias_key:
+                continue
+            if alias_key in groups:
+                uf.union(label_key, alias_key)
+            if alias_key in alias_claimed_by:
+                uf.union(label_key, alias_claimed_by[alias_key])
+            else:
+                alias_claimed_by[alias_key] = label_key
 
     merged_variants: dict[str, list[str]] = {}
     for key in keys:

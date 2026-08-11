@@ -51,8 +51,19 @@ def build_graph(vault_path: str, focus_slug: str | None = None, only_focus: bool
         tags = frontmatter.get("tags") or []
         if isinstance(tags, str):
             tags = [tags]
-        fm_concepts = frontmatter.get("concepts") or []
-        fm_entities = frontmatter.get("entities") or []
+        # concepts frontmatter는 예전 노트에서 문자열 리스트("Self-Attention")였다가
+        # aliases 필드 도입 이후 {label, aliases} 객체 리스트로 바뀌었다. 두 형식을
+        # 모두 {label, aliases} 형태로 정규화해 이후 로직을 단일 형식으로 다룬다.
+        fm_concepts = [
+            {"label": c, "aliases": []}
+            if isinstance(c, str)
+            else {"label": c["label"], "aliases": c.get("aliases") or []}
+            for c in (frontmatter.get("concepts") or [])
+        ]
+        fm_entities = [
+            {"label": e["label"], "concept": e.get("concept"), "aliases": e.get("aliases") or []}
+            for e in (frontmatter.get("entities") or [])
+        ]
 
         links: set[str] = set()
         for wikilink in _WIKILINK_RE.finditer(body):
@@ -82,13 +93,22 @@ def build_graph(vault_path: str, focus_slug: str | None = None, only_focus: bool
     # 그래프가 커질수록 같은 개념이 논문마다 다른 표기("Self-Attention" vs
     # "self attention mechanism")로 등장해 별개 노드로 쪼개지기 쉽다. 노드/에지를
     # 만들기 전에 전체 vault를 훑어 concept/entity 라벨을 한 번에 중복 제거한다.
+    # aliases는 문자열 유사도로 못 잡는 경우(포함 관계, 동의어)를 모델의 문맥
+    # 판단으로 보완하기 위해 dedupe_labels에 함께 전달한다.
     all_concept_labels: set[str] = set()
     all_entity_labels: set[str] = set()
+    concept_aliases: dict[str, list[str]] = {}
+    entity_aliases: dict[str, list[str]] = {}
     for n in notes:
-        claimed = set(n["concepts"]) | {e["label"] for e in n["entities"]}
-        all_concept_labels.update(n["concepts"])
+        claimed = {c["label"] for c in n["concepts"]} | {e["label"] for e in n["entities"]}
+        for c in n["concepts"]:
+            all_concept_labels.add(c["label"])
+            if c["aliases"]:
+                concept_aliases.setdefault(c["label"], []).extend(c["aliases"])
         for entity in n["entities"]:
             all_entity_labels.add(entity["label"])
+            if entity["aliases"]:
+                entity_aliases.setdefault(entity["label"], []).extend(entity["aliases"])
             concept_label = entity.get("concept")
             if concept_label:
                 all_concept_labels.add(concept_label)
@@ -97,14 +117,14 @@ def build_graph(vault_path: str, focus_slug: str | None = None, only_focus: bool
                 continue
             all_concept_labels.add(target)
 
-    concept_canon = dedupe_labels(all_concept_labels)
-    entity_canon = dedupe_labels(all_entity_labels)
+    concept_canon = dedupe_labels(all_concept_labels, aliases=concept_aliases)
+    entity_canon = dedupe_labels(all_entity_labels, aliases=entity_aliases)
 
     for n in notes:
-        claimed = set(n["concepts"]) | {e["label"] for e in n["entities"]}
+        claimed = {c["label"] for c in n["concepts"]} | {e["label"] for e in n["entities"]}
 
-        for concept_label in n["concepts"]:
-            canonical = concept_canon[concept_label]
+        for c in n["concepts"]:
+            canonical = concept_canon[c["label"]]
             concept_id = f"concept:{canonical}"
             if concept_id not in seen_concept_nodes:
                 nodes.append({"id": concept_id, "label": canonical, "type": "concept"})

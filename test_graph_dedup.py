@@ -87,6 +87,45 @@ def test_dedupe_labels_known_limitation_containment() -> None:
     )
 
 
+def test_dedupe_labels_merges_via_shared_alias() -> None:
+    """포함 관계라 문자열 유사도로는 병합되지 않는 라벨도(위 테스트 참고),
+    두 라벨이 같은 alias를 공유하면 병합돼야 한다."""
+    labels = {"Self-Attention", "Attention Mechanism"}
+    aliases = {
+        "Self-Attention": ["Self-Attention Mechanism"],
+        "Attention Mechanism": ["Self-Attention Mechanism"],
+    }
+    canon = dedupe_labels(labels, aliases=aliases)
+    check(
+        "dedupe_labels: 같은 alias를 공유하는 라벨은 병합됨",
+        canon["Self-Attention"] == canon["Attention Mechanism"],
+        str(canon),
+    )
+
+
+def test_dedupe_labels_alias_matches_other_labels_own_text() -> None:
+    """alias가 vault에 이미 존재하는 다른 라벨의 표기 그 자체인 경우도 병합돼야 한다."""
+    labels = {"Self-Attention", "Self-Attention Mechanism"}
+    aliases = {"Self-Attention": ["Self-Attention Mechanism"]}
+    canon = dedupe_labels(labels, aliases=aliases)
+    check(
+        "dedupe_labels: alias가 다른 라벨의 실제 표기와 일치하면 병합됨",
+        canon["Self-Attention"] == canon["Self-Attention Mechanism"],
+        str(canon),
+    )
+
+
+def test_dedupe_labels_no_alias_does_not_merge_unrelated() -> None:
+    """alias가 없는 라벨끼리는 기존 문자열 유사도 로직만 적용돼야 한다(회귀 방지)."""
+    labels = {"Self-Attention", "Attention Mechanism"}
+    canon = dedupe_labels(labels)
+    check(
+        "dedupe_labels: alias 없이는 상위/하위 범주 개념이 병합되지 않음",
+        canon["Self-Attention"] != canon["Attention Mechanism"],
+        str(canon),
+    )
+
+
 def test_dedupe_labels_blocks_numeric_mismatch() -> None:
     labels = {"ResNet-50", "ResNet-101", "GPT-2", "GPT-3"}
     canon = dedupe_labels(labels)
@@ -103,14 +142,31 @@ def test_dedupe_labels_empty_and_single() -> None:
     check("dedupe_labels: 단일 라벨은 자기 자신에 매핑", single == {"Attention": "Attention"})
 
 
-def _write_note(vault: Path, slug: str, concepts: list[str], entities: list[dict]) -> None:
+def _write_note(vault: Path, slug: str, concepts: list[str] | list[dict], entities: list[dict]) -> None:
+    """concepts는 예전 형식(문자열 리스트)과 새 형식({label, aliases} 객체 리스트)을
+    모두 받아 graph_builder의 하위 호환 파싱을 같은 테스트 헬퍼로 검증할 수 있게 한다."""
     folder = vault / "AutoNote" / slug
     folder.mkdir(parents=True, exist_ok=True)
+
+    def _aliases_yaml(aliases: list[str], indent: str) -> str:
+        if not aliases:
+            return f"{indent}aliases: []"
+        items = "\n".join(f'{indent}  - "{a}"' for a in aliases)
+        return f"{indent}aliases:\n{items}"
+
     entities_yaml = "\n".join(
-        f"  - label: \"{e['label']}\"" + (f"\n    concept: \"{e['concept']}\"" if e.get("concept") else "")
+        f"  - label: \"{e['label']}\""
+        + (f"\n    concept: \"{e['concept']}\"" if e.get("concept") else "")
+        + "\n"
+        + _aliases_yaml(e.get("aliases", []), "    ")
         for e in entities
     )
-    concepts_yaml = "\n".join(f'  - "{c}"' for c in concepts)
+    concepts_yaml = "\n".join(
+        f'  - "{c}"'
+        if isinstance(c, str)
+        else f'  - label: "{c["label"]}"\n' + _aliases_yaml(c.get("aliases", []), "    ")
+        for c in concepts
+    )
     content = f"""---
 title: {slug}
 tags: []
@@ -152,14 +208,43 @@ def test_build_graph_merges_cross_note_concepts() -> None:
         )
 
 
+def test_build_graph_merges_via_alias_frontmatter() -> None:
+    """포함 관계라 문자열 유사도로는 안 합쳐질 두 논문의 concept이, 프론트매터에
+    저장된 alias를 통해 하나의 노드로 합쳐지는지 end-to-end로 확인한다."""
+    with tempfile.TemporaryDirectory() as tmp:
+        vault = Path(tmp)
+        _write_note(
+            vault, "paper-a",
+            concepts=[{"label": "Self-Attention", "aliases": ["Self-Attention Mechanism"]}],
+            entities=[],
+        )
+        _write_note(
+            vault, "paper-b",
+            concepts=[{"label": "Attention Mechanism", "aliases": ["Self-Attention Mechanism"]}],
+            entities=[],
+        )
+
+        graph = build_graph(str(vault))
+        concept_nodes = [n for n in graph["nodes"] if n["type"] == "concept"]
+        check(
+            "build_graph: alias를 공유하는 서로 다른 표기의 concept이 하나로 합쳐짐",
+            len(concept_nodes) == 1,
+            f"concept nodes: {concept_nodes}",
+        )
+
+
 def main() -> None:
     test_normalize_label()
     test_minhash_similarity_ordering()
     test_dedupe_labels_merges_near_duplicates()
     test_dedupe_labels_known_limitation_containment()
+    test_dedupe_labels_merges_via_shared_alias()
+    test_dedupe_labels_alias_matches_other_labels_own_text()
+    test_dedupe_labels_no_alias_does_not_merge_unrelated()
     test_dedupe_labels_blocks_numeric_mismatch()
     test_dedupe_labels_empty_and_single()
     test_build_graph_merges_cross_note_concepts()
+    test_build_graph_merges_via_alias_frontmatter()
 
     print()
     if FAILURES:
