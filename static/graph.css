@@ -91,8 +91,11 @@ body.graph-expanded #graphSummary {
 .node-view-body .md-ul { margin: 0 0 10px; padding-left: 20px; }
 .node-view-body .md-hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
 .node-view-body .md-wikilink { color: var(--accent); font-weight: 500; }
-.node-view-body .md-comment { display: none; }
+.node-view-body .md-wikilink.md-wikilink-clickable { cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.node-view-body .md-wikilink.md-wikilink-clickable:hover { color: var(--accent-hover); }
 .node-view-body .md-img { max-width: 100%; border-radius: 8px; border: 1px solid var(--border); margin: 4px 0 10px; display: block; }
+.node-view-body .md-link { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.node-view-body .md-link:hover { color: var(--accent-hover); }
 
 .node-view-edit-bar { margin-top: 4px; }
 .node-view-edit-area { margin-top: 12px; }

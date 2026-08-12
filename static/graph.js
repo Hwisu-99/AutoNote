@@ -242,27 +242,61 @@ function attachmentUrl(path) {
   return /^https?:\/\//.test(path) || path.startsWith('/') ? path : `/${path}`;
 }
 
-function renderInline(text) {
+function renderInline(text, links) {
   let html = escapeHtml(text);
-  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+
+  // 링크/이미지 변환을 순서대로 적용하면, 뒤 단계의 정규식이 앞 단계가 이미 만든
+  // HTML 속성값 안의 URL 문자열까지 다시 매칭해버리는 문제가 있다(예: 방금 만든
+  // <a href="https://..."> 안의 URL을 "본문 URL"로 착각해서 그 안에 또 <a>를
+  // 끼워넣는 식). 그래서 변환된 조각은 최종 HTML을 바로 끼우지 않고 플레이스홀더
+  // 토큰으로 임시 치환해뒀다가, 모든 정규식이 다 지나간 뒤 마지막에 한 번에
+  // 되돌린다 - 이후 단계가 이전 단계의 결과물을 다시 건드릴 일이 없어진다.
+  const stashed = [];
+  const stash = (fragment) => {
+    const token = `\uE000${stashed.length}\uE001`;
+    stashed.push(fragment);
+    return token;
+  };
+
+  html = html.replace(/\*\*(.+?)\*\*/g, (_, inner) => stash(`<strong>${inner}</strong>`));
   // 첨부 이미지: ![alt](경로) -> 즉시 인라인 렌더링(Obsidian 임베드와 같은 경험).
   html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, src) => {
-    return `<img class="md-img" src="${attachmentUrl(src)}" alt="${alt}">`;
+    return stash(`<img class="md-img" src="${attachmentUrl(src)}" alt="${alt}">`);
   });
+  // 마크다운 링크: [설명](https://...) -> 클릭하면 새 탭에서 그 주소로 이동.
+  html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, (_, label, url) => {
+    return stash(`<a class="md-link" href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`);
+  });
+  // [[wikilink]]: 백엔드가 미리 풀어준 links 맵에 그 대상이 있으면(같은 논문
+  // slug이거나 node_store에 매칭되는 concept/entity) 실제로 클릭해서 이동
+  // 가능한 노드로 만들고, 없으면(아직 매칭 안 되는 경우) 예전처럼 그냥 스타일만
+  // 입힌 텍스트로 둔다.
   html = html.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, target, display) => {
-    return `<span class="md-wikilink">${display || target}</span>`;
+    const label = display || target;
+    const resolved = links?.[target.trim()];
+    if (resolved) {
+      return stash(
+        `<span class="md-wikilink md-wikilink-clickable" data-node-type="${resolved.type}" data-node-slug="${escapeHtml(resolved.slug)}">${label}</span>`
+      );
+    }
+    return stash(`<span class="md-wikilink">${label}</span>`);
   });
-  return html;
+  // 마크다운 문법 없이 그냥 붙여넣은 맨 URL도 클릭 가능하게 만든다.
+  html = html.replace(/(https?:\/\/[^\s<>()]+)/g, (url) => {
+    return stash(`<a class="md-link" href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>`);
+  });
+
+  return html.replace(/\uE000(\d+)\uE001/g, (_, i) => stashed[Number(i)]);
 }
 
-function renderMarkdown(markdown) {
+function renderMarkdown(markdown, links = {}) {
   const parts = [];
   let listOpen = false;
   let paragraph = [];
 
   const flushParagraph = () => {
     if (paragraph.length) {
-      parts.push(`<p class="md-p">${renderInline(paragraph.join(' '))}</p>`);
+      parts.push(`<p class="md-p">${renderInline(paragraph.join(' '), links)}</p>`);
       paragraph = [];
     }
   };
@@ -283,17 +317,17 @@ function renderMarkdown(markdown) {
     if (line === '---') { flushParagraph(); closeList(); parts.push('<hr class="md-hr">'); continue; }
 
     const h3 = line.match(/^###\s+(.*)$/);
-    if (h3) { flushParagraph(); closeList(); parts.push(`<div class="md-h3">${renderInline(h3[1])}</div>`); continue; }
+    if (h3) { flushParagraph(); closeList(); parts.push(`<div class="md-h3">${renderInline(h3[1], links)}</div>`); continue; }
     const h2 = line.match(/^##\s+(.*)$/);
-    if (h2) { flushParagraph(); closeList(); parts.push(`<div class="md-h2">${renderInline(h2[1])}</div>`); continue; }
+    if (h2) { flushParagraph(); closeList(); parts.push(`<div class="md-h2">${renderInline(h2[1], links)}</div>`); continue; }
     const h1 = line.match(/^#\s+(.*)$/);
-    if (h1) { flushParagraph(); closeList(); parts.push(`<div class="md-h2">${renderInline(h1[1])}</div>`); continue; }
+    if (h1) { flushParagraph(); closeList(); parts.push(`<div class="md-h2">${renderInline(h1[1], links)}</div>`); continue; }
 
     const li = line.match(/^-\s+(.*)$/);
     if (li) {
       flushParagraph();
       if (!listOpen) { parts.push('<ul class="md-ul">'); listOpen = true; }
-      parts.push(`<li>${renderInline(li[1])}</li>`);
+      parts.push(`<li>${renderInline(li[1], links)}</li>`);
       continue;
     }
 
@@ -337,7 +371,7 @@ async function openNodeView(type, slug, fallbackLabel) {
   bodyEl.innerHTML = `
     <div class="node-view-title">${escapeHtml(data.title)}</div>
     <div class="node-view-meta">${metaChips.join('')}</div>
-    <div class="node-view-body" id="nodeViewRenderedBody">${renderMarkdown(data.body_markdown)}</div>
+    <div class="node-view-body" id="nodeViewRenderedBody">${renderMarkdown(data.body_markdown, data.links)}</div>
     ${editable ? `
       <div class="node-view-edit-bar">
         <button class="graph-btn" id="btnEditNotes">메모 편집</button>
@@ -441,6 +475,14 @@ async function handleImagePaste(event, type, slug, textarea) {
 
 document.getElementById('btnBackToGraph').addEventListener('click', () => {
   document.body.classList.remove('node-mode');
+});
+
+// 노드 본문은 매번 innerHTML을 통째로 새로 그리므로(openNodeView), 위키링크마다
+// 개별로 리스너를 다는 대신 안 바뀌는 부모 컨테이너에 이벤트 위임 하나만 걸어둔다.
+document.getElementById('nodeModeBody').addEventListener('click', (event) => {
+  const link = event.target.closest('.md-wikilink-clickable');
+  if (!link) return;
+  openNodeView(link.dataset.nodeType, link.dataset.nodeSlug, link.textContent);
 });
 
 loadGraph(null);

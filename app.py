@@ -21,7 +21,9 @@ from paper_notes.extractor import extract_text
 from paper_notes.graph_builder import build_graph
 from paper_notes.node_store import (
     NODE_STORE_ROOT,
+    find_node_fuzzy,
     get_user_section,
+    list_nodes,
     resolve_or_create_node,
     save_attachment,
     update_user_section,
@@ -63,6 +65,44 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
     except yaml.YAMLError:
         frontmatter = {}
     return frontmatter, text[match.end() :]
+
+
+# Obsidian wikilink syntax: [[target]], [[target|alias]], embeds !\[\[target]]
+_WIKILINK_RE = re.compile(r"!?\[\[([^\]|#]+)(?:\|[^\]]+)?\]\]")
+
+
+def _resolve_wikilinks(vault_path: str, body: str) -> dict[str, dict]:
+    """본문의 [[wikilink]] 대상들을 note(vault) 또는 concept/entity(node_store)로
+    풀어서 {원본 타깃 텍스트: {type, slug}}를 반환한다. 프론트가 이걸로 위키링크를
+    실제로 클릭 가능하게 만들지(어디로 보낼지) 판단한다. node 파일 자신이 만드는
+    "## 등장 논문" 링크는 대상이 이미 논문 slug라 바로 맞아떨어지고, 논문 본문의
+    concept/entity 위키링크는 그 논문이 직접 뽑은 원본 라벨이라 node_store와
+    퍼지 매칭(find_node_fuzzy)까지 거쳐야 한다."""
+    targets = set()
+    for m in _WIKILINK_RE.finditer(body):
+        target = m.group(1).strip()
+        if target.lower().endswith(".excalidraw"):
+            continue
+        targets.add(target)
+    if not targets:
+        return {}
+
+    concept_nodes = list_nodes(NODE_STORE_ROOT, "concept")
+    entity_nodes = list_nodes(NODE_STORE_ROOT, "entity")
+
+    links: dict[str, dict] = {}
+    for target in targets:
+        if (Path(vault_path) / "AutoNote" / target / f"{target}.md").is_file():
+            links[target] = {"type": "note", "slug": target}
+            continue
+        concept_match = find_node_fuzzy(concept_nodes, target)
+        if concept_match:
+            links[target] = {"type": "concept", "slug": concept_match["slug"]}
+            continue
+        entity_match = find_node_fuzzy(entity_nodes, target)
+        if entity_match:
+            links[target] = {"type": "entity", "slug": entity_match["slug"]}
+    return links
 
 
 async def _summarize_cancellable(paper_text: str, request: Request) -> tuple[dict, float] | None:
@@ -199,8 +239,9 @@ async def get_papers():
 async def get_node(node_type: str, slug: str):
     """그래프 뷰에서 노드를 클릭했을 때 보여줄 md 내용을 반환한다. note는 vault의
     논문 노트, concept/entity는 node_store.py가 관리하는 별도 노드 파일에서 읽는다."""
+    vault_path = get_vault_path()
+
     if node_type == "note":
-        vault_path = get_vault_path()
         path = Path(vault_path) / "AutoNote" / slug / f"{slug}.md"
         if not path.is_file():
             raise HTTPException(status_code=404, detail="논문 노트를 찾을 수 없습니다.")
@@ -211,6 +252,7 @@ async def get_node(node_type: str, slug: str):
             "title": frontmatter.get("title") or slug,
             "meta": {"authors": frontmatter.get("authors"), "tags": frontmatter.get("tags") or []},
             "body_markdown": body.strip(),
+            "links": _resolve_wikilinks(vault_path, body),
         }
 
     if node_type not in ("concept", "entity"):
@@ -237,6 +279,7 @@ async def get_node(node_type: str, slug: str):
         "body_markdown": body.strip(),
         # 편집 UI가 textarea를 채울 때 쓰는, 자동 생성 영역을 뺀 사용자 메모 원문
         "user_markdown": get_user_section(NODE_STORE_ROOT, node_type, slug),
+        "links": _resolve_wikilinks(vault_path, body),
     }
 
 
