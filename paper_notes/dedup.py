@@ -15,6 +15,7 @@ MinHash 설계는 graphify(github.com/Graphify-Labs/graphify)의 dedup 파이프
 """
 from __future__ import annotations
 
+import functools
 import random
 import re
 import unicodedata
@@ -47,14 +48,26 @@ def _shingles(text: str, k: int = _SHINGLE_SIZE) -> set[str]:
     return {text[i : i + k] for i in range(len(text) - k + 1)}
 
 
+@functools.lru_cache(maxsize=None)
 def _hash_permutations(num_perm: int, seed: int = 1) -> list[tuple[int, int]]:
     """MinHash용 유니버설 해시 함수 계수 (a, b) num_perm개를 만든다. seed 고정으로
-    같은 입력에 대해 항상 같은 서명이 나오게 한다(재현 가능성)."""
+    같은 입력에 대해 항상 같은 서명이 나오게 한다(재현 가능성). 결과가 (num_perm,
+    seed)에만 의존하는 순수 함수라 lru_cache로 캐싱한다 - labels_match()처럼
+    단건 비교를 대량으로 반복하는 호출부에서 매번 이 순열을 처음부터 다시 만드는
+    비용이 실제로 체감될 만큼 컸다."""
     rng = random.Random(seed)
     return [
         (rng.randint(1, _MERSENNE_PRIME - 1), rng.randint(0, _MERSENNE_PRIME - 1))
         for _ in range(num_perm)
     ]
+
+
+@functools.lru_cache(maxsize=8192)
+def _cached_signature(key: str, num_perm: int = _NUM_PERM) -> tuple[int, ...]:
+    """정규화된 키의 MinHash 서명을 캐싱한다. 같은 라벨이 여러 비교에 반복
+    등장할 때(그래프 노드 하나를 node_store 노드 여러 개와 비교하는 식) 서명을
+    매번 다시 계산하지 않게 한다."""
+    return minhash_signature(_shingles(key), _hash_permutations(num_perm))
 
 
 def _base_hash(shingle: str) -> int:
@@ -86,6 +99,25 @@ def _numeric_tokens_differ(a: str, b: str) -> bool:
     "gpt 2" vs "gpt 3") - 문자 3-gram만으로는 이런 버전 차이를 구분하지 못한다."""
     nums_a, nums_b = _NUMERIC_RE.findall(a), _NUMERIC_RE.findall(b)
     return nums_a != nums_b and bool(nums_a or nums_b)
+
+
+def labels_match(label_a: str, label_b: str, threshold: float = _DEFAULT_THRESHOLD, num_perm: int = _NUM_PERM) -> bool:
+    """두 라벨이 같은 개념을 가리키는지 단건으로 판단한다 - dedupe_labels()가
+    라벨 집합 전체를 배치로 클러스터링할 때 쓰는 것과 동일한 기준(정규화 완전일치,
+    또는 숫자 토큰이 같으면서 3-gram MinHash 자카드 유사도가 threshold 이상)을
+    라벨 두 개짜리 비교에도 쓸 수 있게 뽑아낸 함수다. node_store.py처럼 논문이
+    들어올 때마다 기존 노드 하나하나와 즉시 비교해야 해서 dedupe_labels()의 배치
+    클러스터링을 매번 다시 돌릴 수 없는 경우에 쓴다 - 이렇게 같은 판정 함수를
+    공유해야, 그래프 뷰(dedupe_labels 기반)와 노드 파일(node_store 기반)이 같은
+    개념을 서로 다르게 판단해 어긋나는 문제가 생기지 않는다."""
+    key_a, key_b = normalize_label(label_a), normalize_label(label_b)
+    if key_a == key_b:
+        return True
+    if not key_a or not key_b or _numeric_tokens_differ(key_a, key_b):
+        return False
+    sig_a = _cached_signature(key_a, num_perm)
+    sig_b = _cached_signature(key_b, num_perm)
+    return jaccard_estimate(sig_a, sig_b) >= threshold
 
 
 class _UnionFind:
@@ -139,8 +171,7 @@ def dedupe_labels(
         return sorted(variants, key=lambda v: (len(v), v))[0]
 
     keys = sorted(groups.keys())
-    permutations = _hash_permutations(num_perm)
-    signatures = {key: minhash_signature(_shingles(key), permutations) for key in keys}
+    signatures = {key: _cached_signature(key, num_perm) for key in keys}
 
     uf = _UnionFind(keys)
     for i, key_a in enumerate(keys):

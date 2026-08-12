@@ -13,7 +13,9 @@ from pathlib import Path
 
 from paper_notes.node_store import (
     execute_merge,
+    find_node_slug_fuzzy,
     list_merge_candidates,
+    list_nodes,
     reject_merge_candidate,
     resolve_or_create_node,
 )
@@ -198,6 +200,38 @@ def test_redirect_stub_excluded_from_future_matching() -> None:
         check("redirect 스텁으로 인해 새 노드가 잘못 생성되지 않음", len(list(concepts_dir.glob("*.md"))) == 2)
 
 
+def test_find_node_slug_fuzzy_matches_label_and_aliases() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        slug = resolve_or_create_node(
+            tmp, "concept", "Self-Attention", ["Self-Attention Mechanism"], "paper-a", "Paper A"
+        )
+        resolve_or_create_node(tmp, "concept", "Byte Pair Encoding", [], "paper-b", "Paper B")
+
+        nodes = list_nodes(tmp, "concept")
+        check("정규화된 display_label로 매칭됨", find_node_slug_fuzzy(nodes, "self attention") == slug)
+        check("정규화된 alias로도 매칭됨", find_node_slug_fuzzy(nodes, "self attention mechanism") == slug)
+        check("무관한 라벨은 매칭 안 됨", find_node_slug_fuzzy(nodes, "byte pair encoding") != slug)
+
+
+def test_resolve_or_create_node_matches_via_fuzzy_similarity_without_alias() -> None:
+    """실제로 겪은 버그: alias 없이도 그래프용 dedupe_labels()가 이미 같은
+    개념으로 묶는 단수/복수 같은 표기 차이는, node_store도 alias 없이 MinHash
+    퍼지 매칭만으로 같은 노드로 인식해야 한다(exact match/alias로는 못 잡음)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        slug1 = resolve_or_create_node(tmp, "concept", "Selective State Space Models", [], "paper-a", "Paper A")
+        slug2 = resolve_or_create_node(tmp, "concept", "Selective State Space Model", [], "paper-b", "Paper B")
+
+        concepts_dir = Path(tmp) / "_concepts"
+        check("alias 없는 단수/복수 표기 차이도 같은 노드로 판정됨", slug1 == slug2)
+        check("새 파일이 추가로 생기지 않음", len(list(concepts_dir.glob("*.md"))) == 1)
+
+        nodes = list_nodes(tmp, "concept")
+        check(
+            "find_node_slug_fuzzy도 같은 기준으로 매칭됨",
+            find_node_slug_fuzzy(nodes, "Selective State Space Model") == slug1,
+        )
+
+
 def test_entity_node_has_no_category_field() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         slug = resolve_or_create_node(tmp, "entity", "Softmax", [], "paper-a", "Paper A")
@@ -218,6 +252,8 @@ def main() -> None:
     test_execute_merge_marks_candidate_as_merged()
     test_reject_merge_candidate_does_not_resurface()
     test_redirect_stub_excluded_from_future_matching()
+    test_find_node_slug_fuzzy_matches_label_and_aliases()
+    test_resolve_or_create_node_matches_via_fuzzy_similarity_without_alias()
     test_entity_node_has_no_category_field()
 
     print()

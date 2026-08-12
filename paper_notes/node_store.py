@@ -7,6 +7,12 @@
 노트 파일을 만든다 - 사용자가 그 노드에 대해 직접 메모를 남길 수 있게 하고, 나중에
 brain consolidation 때 노드 단위로 비교/병합할 수 있게 하기 위함이다.
 
+매칭 기준: 정규화 완전일치, alias 겹침에 더해 dedup.py의 labels_match()(MinHash
+자카드 유사도, dedupe_labels()와 같은 기준)까지 포함한다 - graph_builder.py가
+쓰는 판정과 동일한 함수를 공유해야, 그래프 뷰의 "대표 라벨"과 이 모듈이 고정한
+display_label이 살짝 다른 표기(예: 단수/복수)일 때도 같은 노드로 인식되고, 두
+시스템이 서로 다르게 판단해 어긋나는 문제가 생기지 않는다.
+
 병합 정책: 새 논문이 제공한 alias가 이미 존재하는 서로 다른 두 노드 파일을 잇는
 경우(예: 논문 A의 "MoE", 논문 B의 "Mixture-of-Experts Layer"를 논문 C가 이어줌),
 파일을 즉시 합치지 않는다. 잘못된 병합(예: 상위/하위 개념을 같은 것으로 오판)은
@@ -36,7 +42,7 @@ from pathlib import Path
 
 import yaml
 
-from paper_notes.dedup import normalize_label
+from paper_notes.dedup import labels_match, normalize_label
 
 _FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)
 _DIR_BY_TYPE = {"concept": "_concepts", "entity": "_entities"}
@@ -74,6 +80,27 @@ def _identity_keys(label: str, aliases: list[str]) -> set[str]:
     return {normalize_label(name) for name in [label, *aliases] if name and name.strip()}
 
 
+def _names(label: str, aliases: list[str]) -> list[str]:
+    return [n for n in [label, *aliases] if n and n.strip()]
+
+
+def _matches_node(label: str, aliases: list[str], node: dict) -> bool:
+    """새 label/aliases가 기존 node와 같은 개념인지 판단한다. 먼저 정규화
+    완전일치나 alias 겹침으로 저렴하게 확인하고, 거기서 못 잡으면(예: 단수/복수
+    차이처럼 표기만 살짝 다른 경우) graph_builder.py의 dedupe_labels()와 같은
+    기준(labels_match, MinHash 자카드 유사도)까지 확인한다 - 두 시스템이 같은
+    개념을 서로 다르게 판단해 그래프 뷰와 노드 파일이 어긋나는 문제를 막기 위해
+    같은 판정 함수를 공유한다."""
+    new_keys = _identity_keys(label, aliases)
+    node_keys = _identity_keys(node["display_label"], node.get("aliases") or [])
+    if new_keys & node_keys:
+        return True
+
+    new_names = _names(label, aliases)
+    node_names = _names(node["display_label"], node.get("aliases") or [])
+    return any(labels_match(a, b) for a in new_names for b in node_names)
+
+
 def _read_frontmatter(path: Path) -> dict:
     match = _FRONTMATTER_RE.match(path.read_text(encoding="utf-8"))
     if not match:
@@ -109,6 +136,30 @@ def _existing_nodes(store_root: str, node_type: str) -> list[dict]:
 def get_display_label(store_root: str, node_type: str, slug: str) -> str:
     path = _node_dir(store_root, node_type) / f"{slug}.md"
     return _read_frontmatter(path).get("display_label", slug)
+
+
+def list_nodes(store_root: str, node_type: str) -> list[dict]:
+    """존재하는 모든 노드 파일의 frontmatter 목록을 반환한다(병합돼 사라진
+    redirect 스텁은 제외). 그래프 뷰처럼 여러 label을 한꺼번에 조회해야 할 때는
+    이 목록을 한 번만 불러와 find_node_slug_fuzzy()에 재사용해야 한다 - label
+    하나마다 폴더를 다시 스캔하면 노드 수만큼 스캔이 반복돼 요청이 느려진다."""
+    return _existing_nodes(store_root, node_type)
+
+
+def find_node_fuzzy(nodes: list[dict], label: str, aliases: list[str] | None = None) -> dict | None:
+    """list_nodes()로 미리 불러온 노드 목록에서 label/aliases와 매칭되는(정확
+    일치, alias, 또는 MinHash 퍼지 매칭) 노드를 찾아 그 frontmatter 전체를
+    반환한다. 매칭이 없으면 None."""
+    for node in nodes:
+        if _matches_node(label, aliases or [], node):
+            return node
+    return None
+
+
+def find_node_slug_fuzzy(nodes: list[dict], label: str, aliases: list[str] | None = None) -> str | None:
+    """find_node_fuzzy()와 같지만 slug만 필요한 호출부를 위한 편의 함수."""
+    node = find_node_fuzzy(nodes, label, aliases)
+    return node["slug"] if node else None
 
 
 def _write_node_file(path: Path, frontmatter: dict, user_section: str) -> None:
@@ -262,13 +313,13 @@ def resolve_or_create_node(
     """label/aliases에 해당하는 concept/entity 노드 파일을 찾아 갱신하거나 새로
     만들고, 최종 slug를 반환한다.
 
-    기존 노드가 둘 이상 걸리면(새 alias가 서로 다른 두 기존 노드를 잇는 경우)
-    파일을 바로 합치지 않는다 - 가장 먼저 생성된 노드를 대표(primary)로 삼아
-    갱신하고, 나머지는 _merge_candidates.json에 병합 후보로만 기록한다.
+    기존 노드가 둘 이상 걸리면(새 alias가 서로 다른 두 기존 노드를 잇는 경우,
+    혹은 MinHash 퍼지 매칭으로 두 노드가 동시에 걸리는 경우) 파일을 바로 합치지
+    않는다 - 가장 먼저 생성된 노드를 대표(primary)로 삼아 갱신하고, 나머지는
+    _merge_candidates.json에 병합 후보로만 기록한다.
     """
-    keys = _identity_keys(label, aliases)
     existing = _existing_nodes(store_root, node_type)
-    matches = [n for n in existing if keys & _identity_keys(n["display_label"], n.get("aliases") or [])]
+    matches = [n for n in existing if _matches_node(label, aliases, n)]
 
     if not matches:
         return _create_node(store_root, node_type, label, aliases, source_slug, source_title, category)
