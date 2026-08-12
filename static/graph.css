@@ -92,3 +92,16 @@ body.graph-expanded #graphSummary {
 .node-view-body .md-hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
 .node-view-body .md-wikilink { color: var(--accent); font-weight: 500; }
 .node-view-body .md-comment { display: none; }
+.node-view-body .md-img { max-width: 100%; border-radius: 8px; border: 1px solid var(--border); margin: 4px 0 10px; display: block; }
+
+.node-view-edit-bar { margin-top: 4px; }
+.node-view-edit-area { margin-top: 12px; }
+.node-view-textarea {
+  width: 100%; min-height: 220px; resize: vertical;
+  font-family: inherit; font-size: .85rem; line-height: 1.55; color: var(--text);
+  background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+  padding: 10px 12px; box-sizing: border-box;
+}
+.node-view-textarea:focus { outline: none; border-color: var(--accent); }
+.node-view-edit-actions { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.node-view-edit-status { font-size: .78rem; color: var(--text-muted); }

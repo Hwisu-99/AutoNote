@@ -13,12 +13,19 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from paper_notes.claude_client import summarize_paper
 from paper_notes.excalidraw_writer import write_diagram
 from paper_notes.extractor import extract_text
 from paper_notes.graph_builder import build_graph
-from paper_notes.node_store import NODE_STORE_ROOT, resolve_or_create_node
+from paper_notes.node_store import (
+    NODE_STORE_ROOT,
+    get_user_section,
+    resolve_or_create_node,
+    save_attachment,
+    update_user_section,
+)
 from paper_notes.obsidian_writer import delete_note as delete_local_note
 from paper_notes.obsidian_writer import write_note, write_summary_json
 from paper_notes.supabase_writer import delete_note as delete_remote_note
@@ -228,7 +235,48 @@ async def get_node(node_type: str, slug: str):
             "sources": frontmatter.get("sources") or [],
         },
         "body_markdown": body.strip(),
+        # 편집 UI가 textarea를 채울 때 쓰는, 자동 생성 영역을 뺀 사용자 메모 원문
+        "user_markdown": get_user_section(NODE_STORE_ROOT, node_type, slug),
     }
+
+
+class _NotesPayload(BaseModel):
+    user_notes_markdown: str
+
+
+@app.put("/api/nodes/{node_type}/{slug}/notes")
+async def put_node_notes(node_type: str, slug: str, payload: _NotesPayload):
+    """concept/entity 노드의 개인 메모를 저장한다. 자동 생성 영역(등장 논문
+    목록)은 그대로 두고 사용자 메모 부분만 교체한다."""
+    if node_type not in ("concept", "entity"):
+        raise HTTPException(status_code=404, detail="알 수 없는 노드 타입입니다.")
+    try:
+        update_user_section(NODE_STORE_ROOT, node_type, slug, payload.user_notes_markdown)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"ok": True}
+
+
+@app.post("/api/nodes/{node_type}/{slug}/attachments")
+async def post_node_attachment(node_type: str, slug: str, file: UploadFile = File(...)):
+    """개인 메모에 붙여넣을 이미지를 업로드하고, 마크다운에서 참조할 상대경로를
+    반환한다. 실제 이미지는 /attachments로 정적 서빙된다."""
+    if node_type not in ("concept", "entity"):
+        raise HTTPException(status_code=404, detail="알 수 없는 노드 타입입니다.")
+
+    content = await file.read()
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="이미지 용량은 10MB를 넘을 수 없습니다.")
+
+    try:
+        path = save_attachment(NODE_STORE_ROOT, node_type, slug, file.filename or "", content)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"path": path}
 
 
 @app.get("/api/papers/{slug}/summary")
@@ -258,5 +306,9 @@ async def delete_paper(slug: str):
 
     return {"slug": slug, "local_error": local_error, "remote_error": remote_error}
 
+
+_attachments_dir = Path(NODE_STORE_ROOT) / "attachments"
+_attachments_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/attachments", StaticFiles(directory=str(_attachments_dir)), name="attachments")
 
 app.mount("/", StaticFiles(directory="static", html=True), name="static")

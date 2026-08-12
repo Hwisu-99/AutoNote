@@ -238,9 +238,17 @@ function escapeHtml(text) {
 // 정도만 쓰므로, 별도 라이브러리 없이 그 범위만 직접 렌더링한다. PDF/LLM에서
 // 추출된 텍스트가 들어있어 신뢰할 수 없는 입력이므로 escapeHtml을 먼저 거친 뒤에만
 // 마크다운 문법에 해당하는 태그를 끼워넣는다(escape 전 원본에 직접 태그를 넣지 않음).
+function attachmentUrl(path) {
+  return /^https?:\/\//.test(path) || path.startsWith('/') ? path : `/${path}`;
+}
+
 function renderInline(text) {
   let html = escapeHtml(text);
   html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  // 첨부 이미지: ![alt](경로) -> 즉시 인라인 렌더링(Obsidian 임베드와 같은 경험).
+  html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, src) => {
+    return `<img class="md-img" src="${attachmentUrl(src)}" alt="${alt}">`;
+  });
   html = html.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, target, display) => {
     return `<span class="md-wikilink">${display || target}</span>`;
   });
@@ -322,11 +330,113 @@ async function openNodeView(type, slug, fallbackLabel) {
     if (data.meta.sources?.length) metaChips.push(`<span>등장 논문 ${data.meta.sources.length}편</span>`);
   }
 
+  // note(논문)는 아직 편집 대상이 아니고, concept/entity 노드 파일만 개인 메모
+  // 편집(+이미지 붙여넣기)을 지원한다.
+  const editable = data.type === 'concept' || data.type === 'entity';
+
   bodyEl.innerHTML = `
     <div class="node-view-title">${escapeHtml(data.title)}</div>
     <div class="node-view-meta">${metaChips.join('')}</div>
-    <div class="node-view-body">${renderMarkdown(data.body_markdown)}</div>
+    <div class="node-view-body" id="nodeViewRenderedBody">${renderMarkdown(data.body_markdown)}</div>
+    ${editable ? `
+      <div class="node-view-edit-bar">
+        <button class="graph-btn" id="btnEditNotes">메모 편집</button>
+      </div>
+      <div class="node-view-edit-area" id="nodeViewEditArea" style="display:none;">
+        <textarea class="node-view-textarea" id="nodeViewTextarea" placeholder="자유롭게 메모를 남기세요. 이미지를 붙여넣으면(Ctrl+V) 자동으로 첨부됩니다."></textarea>
+        <div class="node-view-edit-actions">
+          <button class="graph-btn" id="btnSaveNotes">저장</button>
+          <button class="graph-btn" id="btnCancelEdit">취소</button>
+          <span class="node-view-edit-status" id="nodeViewEditStatus"></span>
+        </div>
+      </div>
+    ` : ''}
   `;
+
+  if (editable) wireNoteEditing(type, slug, data.title, data.user_markdown || '');
+}
+
+function wireNoteEditing(type, slug, title, userMarkdown) {
+  const renderedBody = document.getElementById('nodeViewRenderedBody');
+  const editBar = document.querySelector('.node-view-edit-bar');
+  const editArea = document.getElementById('nodeViewEditArea');
+  const textarea = document.getElementById('nodeViewTextarea');
+  const statusEl = document.getElementById('nodeViewEditStatus');
+
+  document.getElementById('btnEditNotes').addEventListener('click', () => {
+    textarea.value = userMarkdown;
+    renderedBody.style.display = 'none';
+    editBar.style.display = 'none';
+    editArea.style.display = 'block';
+    textarea.focus();
+  });
+
+  document.getElementById('btnCancelEdit').addEventListener('click', () => {
+    editArea.style.display = 'none';
+    editBar.style.display = '';
+    renderedBody.style.display = '';
+  });
+
+  document.getElementById('btnSaveNotes').addEventListener('click', async () => {
+    const saveBtn = document.getElementById('btnSaveNotes');
+    saveBtn.disabled = true;
+    statusEl.textContent = '저장 중...';
+    try {
+      const res = await fetch(`/api/nodes/${type}/${encodeURIComponent(slug)}/notes`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_notes_markdown: textarea.value }),
+      });
+      if (!res.ok) throw new Error('save failed');
+      openNodeView(type, slug, title);
+    } catch {
+      statusEl.textContent = '저장 실패';
+      saveBtn.disabled = false;
+    }
+  });
+
+  // 클립보드에 이미지가 있으면 기본 붙여넣기(텍스트로 들어가버림)를 막고,
+  // 대신 즉시 업로드한 뒤 커서 위치에 ![](경로)를 자동으로 끼워넣는다.
+  textarea.addEventListener('paste', (event) => handleImagePaste(event, type, slug, textarea));
+}
+
+async function handleImagePaste(event, type, slug, textarea) {
+  const items = event.clipboardData?.items;
+  if (!items) return;
+  const imageItem = Array.from(items).find((item) => item.type.startsWith('image/'));
+  if (!imageItem) return; // 이미지가 아니면 기본 붙여넣기(텍스트)를 그대로 둔다
+
+  event.preventDefault();
+  const file = imageItem.getAsFile();
+  if (!file) return;
+
+  const start = textarea.selectionStart;
+  const end = textarea.selectionEnd;
+  // 토큰을 매번 다르게 둬서, 업로드가 끝나기 전에 이미지를 연달아 붙여넣어도
+  // 서로 다른 placeholder끼리 잘못 치환되지 않게 한다.
+  const token = Math.random().toString(36).slice(2, 8);
+  const placeholder = `![업로드 중 ${token}...]()`;
+  textarea.value = textarea.value.slice(0, start) + placeholder + textarea.value.slice(end);
+  const cursorAfter = start + placeholder.length;
+  textarea.selectionStart = textarea.selectionEnd = cursorAfter;
+
+  const ext = imageItem.type.split('/')[1] || 'png';
+  const formData = new FormData();
+  formData.append('file', file, `pasted.${ext}`);
+
+  let replacement = '![이미지 업로드 실패]()';
+  try {
+    const res = await fetch(`/api/nodes/${type}/${encodeURIComponent(slug)}/attachments`, {
+      method: 'POST',
+      body: formData,
+    });
+    if (!res.ok) throw new Error('upload failed');
+    const uploaded = await res.json();
+    replacement = `![](${uploaded.path})`;
+  } catch {
+    // replacement는 이미 실패 메시지로 설정돼 있음
+  }
+  textarea.value = textarea.value.replace(placeholder, replacement);
 }
 
 document.getElementById('btnBackToGraph').addEventListener('click', () => {

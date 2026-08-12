@@ -38,6 +38,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -47,6 +49,8 @@ from paper_notes.dedup import labels_match, normalize_label
 
 _FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)
 _DIR_BY_TYPE = {"concept": "_concepts", "entity": "_entities"}
+_ATTACHMENTS_DIR_BY_TYPE = {"concept": "concepts", "entity": "entities"}
+_ALLOWED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 
 # 노드 파일이 실제로 저장되는 기본 위치: 이 프로젝트 폴더(paper_notes/의 부모).
 # resolve_or_create_node 등은 store_root를 인자로 받으므로(테스트에서는 임시
@@ -137,6 +141,53 @@ def _existing_nodes(store_root: str, node_type: str) -> list[dict]:
 def get_display_label(store_root: str, node_type: str, slug: str) -> str:
     path = _node_dir(store_root, node_type) / f"{slug}.md"
     return _read_frontmatter(path).get("display_label", slug)
+
+
+def get_user_section(store_root: str, node_type: str, slug: str) -> str:
+    """사용자가 직접 쓴 메모(원본 마크다운, 자동 생성 영역 제외)만 반환한다.
+    편집 UI가 textarea를 채울 때 쓴다."""
+    path = _node_dir(store_root, node_type) / f"{slug}.md"
+    return _extract_user_section(path)
+
+
+def update_user_section(store_root: str, node_type: str, slug: str, user_markdown: str) -> None:
+    """사용자가 편집한 메모를 저장한다. frontmatter/자동 생성 영역(등장 논문
+    목록)은 건드리지 않고 user_section만 교체한다. 병합돼 사라진 redirect
+    스텁에는 쓸 수 없다(더 이상 독립된 노드가 아니므로)."""
+    path = _node_dir(store_root, node_type) / f"{slug}.md"
+    frontmatter = _read_frontmatter(path)
+    if not frontmatter.get("slug"):
+        raise FileNotFoundError(f"노드 파일을 찾을 수 없습니다: {path}")
+    if frontmatter.get("redirect_to"):
+        raise ValueError(f"'{slug}'는 다른 노드로 병합되어 더 이상 독립된 노드가 아닙니다.")
+    _write_node_file(path, frontmatter, user_markdown)
+
+
+def save_attachment(store_root: str, node_type: str, slug: str, filename: str, content: bytes) -> str:
+    """이미지 첨부파일을 저장하고, md 본문에서 참조할 상대경로를 반환한다
+    (예: "attachments/concepts/self-attention/173..-ab12.png"). 업로드된
+    파일명은 신뢰하지 않고(경로 조작 방지) 확장자만 취해 서버가 충돌 없는
+    이름을 새로 붙인다. attachments/는 node_store.py의 다른 파일들과 같은 위치
+    (NODE_STORE_ROOT)에 두고, app.py가 /attachments로 정적 서빙한다."""
+    path = _node_dir(store_root, node_type) / f"{slug}.md"
+    frontmatter = _read_frontmatter(path)
+    if not frontmatter.get("slug"):
+        raise FileNotFoundError(f"노드 파일을 찾을 수 없습니다: {path}")
+    if frontmatter.get("redirect_to"):
+        raise ValueError(f"'{slug}'는 다른 노드로 병합되어 더 이상 독립된 노드가 아닙니다.")
+
+    ext = Path(filename).suffix.lower()
+    if ext not in _ALLOWED_IMAGE_EXTENSIONS:
+        raise ValueError(f"지원하지 않는 이미지 형식입니다: {ext or '(확장자 없음)'}")
+
+    type_dir = _ATTACHMENTS_DIR_BY_TYPE[node_type]
+    folder = Path(store_root) / "attachments" / type_dir / slug
+    folder.mkdir(parents=True, exist_ok=True)
+
+    generated_name = f"{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}{ext}"
+    (folder / generated_name).write_bytes(content)
+
+    return f"attachments/{type_dir}/{slug}/{generated_name}"
 
 
 # store_root/node_type별로 (디렉터리 서명, 파싱된 노드 목록)을 프로세스 메모리에

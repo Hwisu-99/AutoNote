@@ -14,10 +14,13 @@ from pathlib import Path
 from paper_notes.node_store import (
     execute_merge,
     find_node_slug_fuzzy,
+    get_user_section,
     list_merge_candidates,
     list_nodes,
     reject_merge_candidate,
     resolve_or_create_node,
+    save_attachment,
+    update_user_section,
 )
 
 FAILURES: list[str] = []
@@ -263,6 +266,75 @@ def test_list_nodes_cache_invalidates_on_content_update() -> None:
         )
 
 
+def test_update_user_section_replaces_only_user_part() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        slug = resolve_or_create_node(tmp, "concept", "Self-Attention", [], "paper-a", "Paper A")
+
+        update_user_section(tmp, "concept", slug, "내가 쓴 메모")
+        check("저장한 메모가 get_user_section으로 그대로 조회됨", get_user_section(tmp, "concept", slug) == "내가 쓴 메모")
+
+        path = Path(tmp) / "_concepts" / f"{slug}.md"
+        text = path.read_text(encoding="utf-8")
+        check("자동 생성 영역(등장 논문)은 그대로 남아있음", "paper-a" in text and "## 등장 논문" in text)
+
+        update_user_section(tmp, "concept", slug, "메모를 덮어씀")
+        check("두 번째 저장이 이전 메모를 완전히 대체함", get_user_section(tmp, "concept", slug) == "메모를 덮어씀")
+
+
+def test_update_user_section_rejects_missing_or_merged_node() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        raised_missing = False
+        try:
+            update_user_section(tmp, "concept", "no-such-slug", "메모")
+        except FileNotFoundError:
+            raised_missing = True
+        check("존재하지 않는 노드는 FileNotFoundError", raised_missing)
+
+        slug_a, slug_b = _bridge_moe_candidate(tmp)
+        execute_merge(tmp, "concept", slug_a, slug_b)
+        raised_merged = False
+        try:
+            update_user_section(tmp, "concept", slug_b, "메모")
+        except ValueError:
+            raised_merged = True
+        check("병합돼 사라진(redirect) 노드에는 메모를 못 씀", raised_merged)
+
+
+def test_save_attachment_creates_file_and_returns_relative_path() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        slug = resolve_or_create_node(tmp, "entity", "Softmax", [], "paper-a", "Paper A")
+
+        rel_path = save_attachment(tmp, "entity", slug, "screenshot.png", b"fake-png-bytes")
+        check(
+            "반환된 경로가 attachments/entities/<slug>/ 아래를 가리킴",
+            rel_path.startswith(f"attachments/entities/{slug}/") and rel_path.endswith(".png"),
+            rel_path,
+        )
+
+        saved_file = Path(tmp) / rel_path
+        check("실제 파일이 저장됨", saved_file.is_file())
+        check("저장된 내용이 업로드한 바이트와 동일함", saved_file.read_bytes() == b"fake-png-bytes")
+
+
+def test_save_attachment_rejects_bad_extension_and_missing_node() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        slug = resolve_or_create_node(tmp, "concept", "Self-Attention", [], "paper-a", "Paper A")
+
+        raised_ext = False
+        try:
+            save_attachment(tmp, "concept", slug, "malware.exe", b"...")
+        except ValueError:
+            raised_ext = True
+        check("허용되지 않은 확장자는 거부됨", raised_ext)
+
+        raised_missing = False
+        try:
+            save_attachment(tmp, "concept", "no-such-slug", "a.png", b"...")
+        except FileNotFoundError:
+            raised_missing = True
+        check("존재하지 않는 노드에는 첨부 못 함", raised_missing)
+
+
 def test_entity_node_has_no_category_field() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         slug = resolve_or_create_node(tmp, "entity", "Softmax", [], "paper-a", "Paper A")
@@ -287,6 +359,10 @@ def main() -> None:
     test_resolve_or_create_node_matches_via_fuzzy_similarity_without_alias()
     test_list_nodes_cache_invalidates_on_new_node()
     test_list_nodes_cache_invalidates_on_content_update()
+    test_update_user_section_replaces_only_user_part()
+    test_update_user_section_rejects_missing_or_merged_node()
+    test_save_attachment_creates_file_and_returns_relative_path()
+    test_save_attachment_rejects_bad_extension_and_missing_node()
     test_entity_node_has_no_category_field()
 
     print()
