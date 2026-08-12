@@ -36,6 +36,7 @@ dedup으로 그래프를 그린다(이 모듈은 별도로 병행되는 시스�
 from __future__ import annotations
 
 import json
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -138,12 +139,45 @@ def get_display_label(store_root: str, node_type: str, slug: str) -> str:
     return _read_frontmatter(path).get("display_label", slug)
 
 
+# store_root/node_type별로 (디렉터리 서명, 파싱된 노드 목록)을 프로세스 메모리에
+# 캐싱한다. 파일 내용까지는 캐시하지 않고 "이 디렉터리가 지난번과 똑같은지"만
+# 저렴하게(os.scandir, 내용은 안 읽음) 확인해서 무효화 여부를 판단한다.
+_LIST_NODES_CACHE: dict[tuple[str, str], tuple[tuple, list[dict]]] = {}
+
+
+def _dir_signature(folder: Path) -> tuple:
+    """폴더 안 .md 파일들의 (이름, 수정시각) 목록. 내용을 읽지 않고 메타데이터만
+    보므로 전체 파싱보다 훨씬 저렴하다 - review_merge_candidates.py처럼 다른
+    프로세스가 파일을 바꿔도, 다음 list_nodes() 호출에서 mtime 차이로 정확히
+    감지된다."""
+    try:
+        return tuple(
+            sorted((entry.name, entry.stat().st_mtime_ns) for entry in os.scandir(folder) if entry.name.endswith(".md"))
+        )
+    except FileNotFoundError:
+        return ()
+
+
 def list_nodes(store_root: str, node_type: str) -> list[dict]:
     """존재하는 모든 노드 파일의 frontmatter 목록을 반환한다(병합돼 사라진
     redirect 스텁은 제외). 그래프 뷰처럼 여러 label을 한꺼번에 조회해야 할 때는
-    이 목록을 한 번만 불러와 find_node_slug_fuzzy()에 재사용해야 한다 - label
-    하나마다 폴더를 다시 스캔하면 노드 수만큼 스캔이 반복돼 요청이 느려진다."""
-    return _existing_nodes(store_root, node_type)
+    이 목록을 한 번만 불러와 find_node_fuzzy()에 재사용해야 한다 - label 하나마다
+    폴더를 다시 스캔하면 노드 수만큼 스캔이 반복돼 요청이 느려진다.
+
+    디렉터리 내용이 지난 호출과 똑같으면(_dir_signature 비교) 프로세스 메모리에
+    캐싱된 결과를 그대로 반환하고, 파일이 추가/삭제/수정됐을 때만 실제로 다시
+    읽고 파싱한다."""
+    folder = _node_dir(store_root, node_type)
+    key = (store_root, node_type)
+    signature = _dir_signature(folder)
+
+    cached = _LIST_NODES_CACHE.get(key)
+    if cached is not None and cached[0] == signature:
+        return cached[1]
+
+    result = _existing_nodes(store_root, node_type)
+    _LIST_NODES_CACHE[key] = (signature, result)
+    return result
 
 
 def find_node_fuzzy(nodes: list[dict], label: str, aliases: list[str] | None = None) -> dict | None:

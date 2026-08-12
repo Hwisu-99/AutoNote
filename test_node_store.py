@@ -232,6 +232,37 @@ def test_resolve_or_create_node_matches_via_fuzzy_similarity_without_alias() -> 
         )
 
 
+def test_list_nodes_cache_invalidates_on_new_node() -> None:
+    """list_nodes()는 프로세스 메모리에 결과를 캐싱한다(디렉터리 서명이 같으면
+    재사용). 캐싱 후 새 노드가 추가되면 다음 호출에서 그 변경이 반영돼야 한다 -
+    안 그러면 새로 처리된 논문의 concept/entity가 그래프에서 계속 안 보이는
+    회귀가 생긴다."""
+    with tempfile.TemporaryDirectory() as tmp:
+        resolve_or_create_node(tmp, "concept", "Self-Attention", [], "paper-a", "Paper A")
+        first = list_nodes(tmp, "concept")
+        check("첫 호출에서 노드 1개", len(first) == 1, str(first))
+
+        resolve_or_create_node(tmp, "concept", "Byte Pair Encoding", [], "paper-b", "Paper B")
+        second = list_nodes(tmp, "concept")
+        check("새 노드 추가 후 캐시가 무효화되어 2개로 반영됨", len(second) == 2, str(second))
+
+
+def test_list_nodes_cache_invalidates_on_content_update() -> None:
+    """파일이 새로 생기지 않고 기존 파일 내용만 갱신돼도(같은 개념을 다른 논문이
+    또 언급하는 경우) 캐시가 그 변경을 반영해야 한다."""
+    with tempfile.TemporaryDirectory() as tmp:
+        resolve_or_create_node(tmp, "concept", "Self-Attention", [], "paper-a", "Paper A")
+        list_nodes(tmp, "concept")  # 캐시 warm-up
+
+        resolve_or_create_node(tmp, "concept", "self attention", [], "paper-b", "Paper B")
+        updated = list_nodes(tmp, "concept")
+        check(
+            "같은 파일의 sources 갱신도 캐시에 반영됨",
+            len(updated) == 1 and len(updated[0]["sources"]) == 2,
+            str(updated),
+        )
+
+
 def test_entity_node_has_no_category_field() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         slug = resolve_or_create_node(tmp, "entity", "Softmax", [], "paper-a", "Paper A")
@@ -254,6 +285,8 @@ def main() -> None:
     test_redirect_stub_excluded_from_future_matching()
     test_find_node_slug_fuzzy_matches_label_and_aliases()
     test_resolve_or_create_node_matches_via_fuzzy_similarity_without_alias()
+    test_list_nodes_cache_invalidates_on_new_node()
+    test_list_nodes_cache_invalidates_on_content_update()
     test_entity_node_has_no_category_field()
 
     print()

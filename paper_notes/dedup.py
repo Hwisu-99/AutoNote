@@ -30,12 +30,15 @@ _DEFAULT_THRESHOLD = 0.82
 _NUMERIC_RE = re.compile(r"\d+")
 
 
+@functools.lru_cache(maxsize=8192)
 def normalize_label(label: str) -> str:
     """대소문자/공백/구두점 차이를 흡수하는 정규화 키.
 
     NFKC로 유니코드 형태를 통일하고 영숫자가 아닌 문자를 공백 하나로 뭉갠 뒤
     casefold한다. 노드 ID에 쓰기 안전한 문자만 남기면서, 표기만 다른 같은 개념을
-    이 단계에서 바로 같은 키로 합친다.
+    이 단계에서 바로 같은 키로 합친다. node_store._matches_node()가 같은
+    node_store 파일의 display_label/alias를 여러 원본 라벨과 비교할 때마다
+    매번 다시 정규화하는 게 프로파일링에서 확인한 최대 병목이라 캐싱한다.
     """
     s = unicodedata.normalize("NFKC", label)
     s = re.sub(r"[^\w]+", " ", s, flags=re.UNICODE)
