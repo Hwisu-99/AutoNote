@@ -190,10 +190,24 @@ def save_attachment(store_root: str, node_type: str, slug: str, filename: str, c
     return f"attachments/{type_dir}/{slug}/{generated_name}"
 
 
-# store_root/node_type별로 (디렉터리 서명, 파싱된 노드 목록)을 프로세스 메모리에
-# 캐싱한다. 파일 내용까지는 캐시하지 않고 "이 디렉터리가 지난번과 똑같은지"만
-# 저렴하게(os.scandir, 내용은 안 읽음) 확인해서 무효화 여부를 판단한다.
-_LIST_NODES_CACHE: dict[tuple[str, str], tuple[tuple, list[dict]]] = {}
+def build_node_index(nodes: list[dict]) -> dict[str, dict]:
+    """{정규화된 display_label 또는 alias: 노드} 역인덱스를 만든다. 완전일치/alias
+    매칭을 노드 수와 무관하게 O(1)로 만들기 위함이다 - 인덱스 없이는 라벨 하나를
+    찾을 때마다 노드 목록 전체를 처음부터 훑어야 해서(find_node_fuzzy의 기존
+    선형 탐색), 노드가 수만 개로 늘어나면 그래프 하나 그릴 때 라벨마다 수만 번씩
+    비교가 반복돼 느려진다. 같은 정규화 키를 여러 노드가 주장하는 경우(드묾)는
+    먼저 등록된 쪽을 우선한다 - 결과가 매번 달라지지 않게."""
+    index: dict[str, dict] = {}
+    for node in nodes:
+        for name in _names(node["display_label"], node.get("aliases") or []):
+            index.setdefault(normalize_label(name), node)
+    return index
+
+
+# store_root/node_type별로 (디렉터리 서명, 파싱된 노드 목록, 역인덱스)를 프로세스
+# 메모리에 캐싱한다. 파일 내용까지는 캐시하지 않고 "이 디렉터리가 지난번과
+# 똑같은지"만 저렴하게(os.scandir, 내용은 안 읽음) 확인해서 무효화 여부를 판단한다.
+_LIST_NODES_CACHE: dict[tuple[str, str], tuple[tuple, list[dict], dict[str, dict]]] = {}
 
 
 def _dir_signature(folder: Path) -> tuple:
@@ -209,6 +223,21 @@ def _dir_signature(folder: Path) -> tuple:
         return ()
 
 
+def _cached_nodes_and_index(store_root: str, node_type: str) -> tuple[list[dict], dict[str, dict]]:
+    folder = _node_dir(store_root, node_type)
+    key = (store_root, node_type)
+    signature = _dir_signature(folder)
+
+    cached = _LIST_NODES_CACHE.get(key)
+    if cached is not None and cached[0] == signature:
+        return cached[1], cached[2]
+
+    result = _existing_nodes(store_root, node_type)
+    index = build_node_index(result)
+    _LIST_NODES_CACHE[key] = (signature, result, index)
+    return result, index
+
+
 def list_nodes(store_root: str, node_type: str) -> list[dict]:
     """존재하는 모든 노드 파일의 frontmatter 목록을 반환한다(병합돼 사라진
     redirect 스텁은 제외). 그래프 뷰처럼 여러 label을 한꺼번에 조회해야 할 때는
@@ -218,32 +247,45 @@ def list_nodes(store_root: str, node_type: str) -> list[dict]:
     디렉터리 내용이 지난 호출과 똑같으면(_dir_signature 비교) 프로세스 메모리에
     캐싱된 결과를 그대로 반환하고, 파일이 추가/삭제/수정됐을 때만 실제로 다시
     읽고 파싱한다."""
-    folder = _node_dir(store_root, node_type)
-    key = (store_root, node_type)
-    signature = _dir_signature(folder)
-
-    cached = _LIST_NODES_CACHE.get(key)
-    if cached is not None and cached[0] == signature:
-        return cached[1]
-
-    result = _existing_nodes(store_root, node_type)
-    _LIST_NODES_CACHE[key] = (signature, result)
-    return result
+    return _cached_nodes_and_index(store_root, node_type)[0]
 
 
-def find_node_fuzzy(nodes: list[dict], label: str, aliases: list[str] | None = None) -> dict | None:
+def node_index(store_root: str, node_type: str) -> dict[str, dict]:
+    """list_nodes()와 같은 캐시를 공유하는 역인덱스(build_node_index 결과)를
+    반환한다. 여러 라벨을 조회해야 하는 호출부는 이걸 한 번만 받아서
+    find_node_fuzzy(..., index=...)에 넘겨 재사용해야 한다 - 매 라벨마다
+    새로 만들면 인덱스를 쓰는 의미가 없어진다."""
+    return _cached_nodes_and_index(store_root, node_type)[1]
+
+
+def find_node_fuzzy(
+    nodes: list[dict], label: str, aliases: list[str] | None = None, index: dict[str, dict] | None = None
+) -> dict | None:
     """list_nodes()로 미리 불러온 노드 목록에서 label/aliases와 매칭되는(정확
     일치, alias, 또는 MinHash 퍼지 매칭) 노드를 찾아 그 frontmatter 전체를
-    반환한다. 매칭이 없으면 None."""
+    반환한다. 매칭이 없으면 None.
+
+    index(node_index() 결과)가 주어지면 정규화 완전일치/alias는 먼저 O(1) 사전
+    조회로 확인한다 - 대부분의 재등장 라벨은 여기서 바로 끝나고, 인덱스에 없는
+    (완전히 새로운 표기의) 라벨만 아래의 기존 선형 탐색 + MinHash 퍼지 매칭으로
+    넘어간다. 노드 수가 많아져도 흔한 경우의 비용이 늘어나지 않게 하기 위함."""
+    if index is not None:
+        for name in _names(label, aliases or []):
+            hit = index.get(normalize_label(name))
+            if hit is not None:
+                return hit
+
     for node in nodes:
         if _matches_node(label, aliases or [], node):
             return node
     return None
 
 
-def find_node_slug_fuzzy(nodes: list[dict], label: str, aliases: list[str] | None = None) -> str | None:
+def find_node_slug_fuzzy(
+    nodes: list[dict], label: str, aliases: list[str] | None = None, index: dict[str, dict] | None = None
+) -> str | None:
     """find_node_fuzzy()와 같지만 slug만 필요한 호출부를 위한 편의 함수."""
-    node = find_node_fuzzy(nodes, label, aliases)
+    node = find_node_fuzzy(nodes, label, aliases, index)
     return node["slug"] if node else None
 
 

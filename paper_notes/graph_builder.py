@@ -6,7 +6,7 @@ from pathlib import Path
 import yaml
 
 from paper_notes.dedup import dedupe_labels
-from paper_notes.node_store import NODE_STORE_ROOT, find_node_fuzzy, list_nodes
+from paper_notes.node_store import NODE_STORE_ROOT, find_node_fuzzy, list_nodes, node_index
 
 # Obsidian wikilink syntax: [[target]], [[target|alias]], embeds !\[\[target]]
 _WIKILINK_RE = re.compile(r"!?\[\[([^\]|#]+)(?:\|[^\]]+)?\]\]")
@@ -14,7 +14,7 @@ _FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)
 
 
 def _resolve_labels(
-    raw_labels: set[str], aliases: dict[str, list[str]], store_nodes: list[dict]
+    raw_labels: set[str], aliases: dict[str, list[str]], store_nodes: list[dict], store_index: dict[str, dict]
 ) -> dict[str, tuple[str, str | None]]:
     """원본 라벨 -> (그래프에 표시할 라벨, node_store slug 또는 None) 매핑을 만든다.
 
@@ -24,11 +24,16 @@ def _resolve_labels(
     일치하고, 매번 그래프를 그릴 때마다 "혹시 둘이 같은 개념인가" 재확인할 필요가
     없다(node_store가 이미 한 번 판단해서 파일로 고정해둔 결과를 그대로 신뢰).
     node_store에 아직 없는 라벨들만 예전처럼 dedupe_labels()로 서로 묶어 대표
-    라벨을 새로 고른다."""
+    라벨을 새로 고른다.
+
+    store_index(node_index() 결과)를 넘기면 대부분의(이미 알려진 표기의) 라벨은
+    O(1) 사전 조회로 즉시 풀리고, node_store에 정말 없는 새 표기만 느린 선형
+    탐색+MinHash 퍼지 매칭으로 넘어간다 - node_store 규모가 커져도 흔한 경우의
+    비용이 늘어나지 않게 하기 위함."""
     resolved: dict[str, tuple[str, str | None]] = {}
     unmatched: set[str] = set()
     for label in raw_labels:
-        node = find_node_fuzzy(store_nodes, label, aliases.get(label))
+        node = find_node_fuzzy(store_nodes, label, aliases.get(label), store_index)
         if node:
             resolved[label] = (node["display_label"], node["slug"])
         else:
@@ -156,8 +161,12 @@ def build_graph(vault_path: str, focus_slug: str | None = None, only_focus: bool
     # 목록은 노드 수와 무관하게 폴더당 한 번만 스캔한다.
     concept_nodes_store = list_nodes(NODE_STORE_ROOT, "concept")
     entity_nodes_store = list_nodes(NODE_STORE_ROOT, "entity")
-    concept_resolved = _resolve_labels(all_concept_labels, concept_aliases, concept_nodes_store)
-    entity_resolved = _resolve_labels(all_entity_labels, entity_aliases, entity_nodes_store)
+    concept_resolved = _resolve_labels(
+        all_concept_labels, concept_aliases, concept_nodes_store, node_index(NODE_STORE_ROOT, "concept")
+    )
+    entity_resolved = _resolve_labels(
+        all_entity_labels, entity_aliases, entity_nodes_store, node_index(NODE_STORE_ROOT, "entity")
+    )
 
     for n in notes:
         claimed = {c["label"] for c in n["concepts"]} | {e["label"] for e in n["entities"]}

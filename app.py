@@ -24,6 +24,7 @@ from paper_notes.node_store import (
     find_node_fuzzy,
     get_user_section,
     list_nodes,
+    node_index,
     resolve_or_create_node,
     save_attachment,
     update_user_section,
@@ -89,17 +90,19 @@ def _resolve_wikilinks(vault_path: str, body: str) -> dict[str, dict]:
 
     concept_nodes = list_nodes(NODE_STORE_ROOT, "concept")
     entity_nodes = list_nodes(NODE_STORE_ROOT, "entity")
+    concept_idx = node_index(NODE_STORE_ROOT, "concept")
+    entity_idx = node_index(NODE_STORE_ROOT, "entity")
 
     links: dict[str, dict] = {}
     for target in targets:
         if (Path(vault_path) / "AutoNote" / target / f"{target}.md").is_file():
             links[target] = {"type": "note", "slug": target}
             continue
-        concept_match = find_node_fuzzy(concept_nodes, target)
+        concept_match = find_node_fuzzy(concept_nodes, target, index=concept_idx)
         if concept_match:
             links[target] = {"type": "concept", "slug": concept_match["slug"]}
             continue
-        entity_match = find_node_fuzzy(entity_nodes, target)
+        entity_match = find_node_fuzzy(entity_nodes, target, index=entity_idx)
         if entity_match:
             links[target] = {"type": "entity", "slug": entity_match["slug"]}
     return links

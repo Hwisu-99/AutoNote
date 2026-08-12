@@ -12,11 +12,14 @@ import tempfile
 from pathlib import Path
 
 from paper_notes.node_store import (
+    build_node_index,
     execute_merge,
+    find_node_fuzzy,
     find_node_slug_fuzzy,
     get_user_section,
     list_merge_candidates,
     list_nodes,
+    node_index,
     reject_merge_candidate,
     resolve_or_create_node,
     save_attachment,
@@ -235,6 +238,61 @@ def test_resolve_or_create_node_matches_via_fuzzy_similarity_without_alias() -> 
         )
 
 
+def test_build_node_index_maps_normalized_names_to_node() -> None:
+    nodes = [
+        {"slug": "self-attention", "display_label": "Self-Attention", "aliases": ["SA"]},
+        {"slug": "moe", "display_label": "MoE", "aliases": ["Mixture-of-Experts"]},
+    ]
+    index = build_node_index(nodes)
+    check("정규화된 display_label이 키로 등록됨", index.get("self attention") is nodes[0])
+    check("정규화된 alias도 키로 등록됨", index.get("sa") is nodes[0])
+    check("다른 노드의 alias도 각자 등록됨", index.get("mixture of experts") is nodes[1])
+    check("등록 안 된 표기는 인덱스에 없음", index.get("attention") is None)
+
+
+def test_find_node_fuzzy_with_index_matches_exact_without_scanning_all_nodes() -> None:
+    """index를 넘기면 완전일치/alias는 O(1) 사전 조회로 먼저 확인해야 한다.
+    무관한 노드를 잔뜩 섞어놔도 결과가 똑같이 정확해야 함을 확인한다."""
+    with tempfile.TemporaryDirectory() as tmp:
+        for i in range(20):
+            resolve_or_create_node(tmp, "concept", f"Filler Concept {i}", [], f"paper-{i}", f"Paper {i}")
+        target_slug = resolve_or_create_node(
+            tmp, "concept", "Self-Attention", ["SA"], "paper-target", "Paper Target"
+        )
+
+        nodes = list_nodes(tmp, "concept")
+        idx = node_index(tmp, "concept")
+        check("index 기반 조회로 display_label 매칭", find_node_fuzzy(nodes, "Self-Attention", index=idx)["slug"] == target_slug)
+        check("index 기반 조회로 alias 매칭", find_node_fuzzy(nodes, "SA", index=idx)["slug"] == target_slug)
+        check("index에 없는 라벨은 매칭 안 됨(관련 없는 표기)", find_node_fuzzy(nodes, "Completely Unrelated", index=idx) is None)
+
+
+def test_find_node_fuzzy_with_index_still_falls_back_to_fuzzy_matching() -> None:
+    """index는 정확일치/alias만 담고 있어서, 표기가 살짝 다른(단수/복수 등) 새
+    라벨은 index에 없다 - 이 경우에도 기존 선형 탐색+MinHash 퍼지 매칭으로
+    정상적으로 넘어가야 한다(index가 있어도 결과가 index 없을 때와 같아야 함)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        slug = resolve_or_create_node(tmp, "concept", "Selective State Space Models", [], "paper-a", "Paper A")
+
+        nodes = list_nodes(tmp, "concept")
+        idx = node_index(tmp, "concept")
+        check(
+            "index에 없는 단수형도 fallback 퍼지 매칭으로 찾아짐",
+            find_node_fuzzy(nodes, "Selective State Space Model", index=idx)["slug"] == slug,
+        )
+
+
+def test_node_index_shares_cache_and_invalidates_with_list_nodes() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        resolve_or_create_node(tmp, "concept", "Self-Attention", [], "paper-a", "Paper A")
+        idx1 = node_index(tmp, "concept")
+        check("첫 조회 후 인덱스에 1개 등록", "self attention" in idx1)
+
+        resolve_or_create_node(tmp, "concept", "Byte Pair Encoding", [], "paper-b", "Paper B")
+        idx2 = node_index(tmp, "concept")
+        check("새 노드 추가 후 인덱스가 갱신됨(list_nodes 캐시와 같은 무효화 규칙 공유)", "byte pair encoding" in idx2)
+
+
 def test_list_nodes_cache_invalidates_on_new_node() -> None:
     """list_nodes()는 프로세스 메모리에 결과를 캐싱한다(디렉터리 서명이 같으면
     재사용). 캐싱 후 새 노드가 추가되면 다음 호출에서 그 변경이 반영돼야 한다 -
@@ -357,6 +415,10 @@ def main() -> None:
     test_redirect_stub_excluded_from_future_matching()
     test_find_node_slug_fuzzy_matches_label_and_aliases()
     test_resolve_or_create_node_matches_via_fuzzy_similarity_without_alias()
+    test_build_node_index_maps_normalized_names_to_node()
+    test_find_node_fuzzy_with_index_matches_exact_without_scanning_all_nodes()
+    test_find_node_fuzzy_with_index_still_falls_back_to_fuzzy_matching()
+    test_node_index_shares_cache_and_invalidates_with_list_nodes()
     test_list_nodes_cache_invalidates_on_new_node()
     test_list_nodes_cache_invalidates_on_content_update()
     test_update_user_section_replaces_only_user_part()

@@ -13,6 +13,7 @@ from pathlib import Path
 from paper_notes.dedup import dedupe_labels, jaccard_estimate, labels_match, minhash_signature, normalize_label
 from paper_notes.dedup import _hash_permutations, _shingles
 from paper_notes.graph_builder import _resolve_labels, build_graph
+from paper_notes.node_store import build_node_index
 
 FAILURES: list[str] = []
 
@@ -271,7 +272,7 @@ def test_resolve_labels_uses_node_store_display_label_when_matched() -> None:
         },
     ]
     raw_labels = {"Selective State Space Model", "Byte Pair Encoding"}
-    resolved = _resolve_labels(raw_labels, {}, store_nodes)
+    resolved = _resolve_labels(raw_labels, {}, store_nodes, build_node_index(store_nodes))
 
     check(
         "node_store에 매칭되는 라벨은 파일의 display_label/slug를 그대로 씀",
