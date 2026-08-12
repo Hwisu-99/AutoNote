@@ -6,10 +6,39 @@ from pathlib import Path
 import yaml
 
 from paper_notes.dedup import dedupe_labels
+from paper_notes.node_store import NODE_STORE_ROOT, find_node_fuzzy, list_nodes
 
 # Obsidian wikilink syntax: [[target]], [[target|alias]], embeds !\[\[target]]
 _WIKILINK_RE = re.compile(r"!?\[\[([^\]|#]+)(?:\|[^\]]+)?\]\]")
 _FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)
+
+
+def _resolve_labels(
+    raw_labels: set[str], aliases: dict[str, list[str]], store_nodes: list[dict]
+) -> dict[str, tuple[str, str | None]]:
+    """원본 라벨 -> (그래프에 표시할 라벨, node_store slug 또는 None) 매핑을 만든다.
+
+    node_store에 이미 해당 개념의 물리적 노드 파일이 있으면, 그래프가 별도로
+    "대표 라벨"을 계산하지 않고 그 파일의 display_label을 그대로 가져다 쓴다 -
+    그래야 그래프에 보이는 라벨과 실제 클릭해서 들어가는 md 파일이 항상 정확히
+    일치하고, 매번 그래프를 그릴 때마다 "혹시 둘이 같은 개념인가" 재확인할 필요가
+    없다(node_store가 이미 한 번 판단해서 파일로 고정해둔 결과를 그대로 신뢰).
+    node_store에 아직 없는 라벨들만 예전처럼 dedupe_labels()로 서로 묶어 대표
+    라벨을 새로 고른다."""
+    resolved: dict[str, tuple[str, str | None]] = {}
+    unmatched: set[str] = set()
+    for label in raw_labels:
+        node = find_node_fuzzy(store_nodes, label, aliases.get(label))
+        if node:
+            resolved[label] = (node["display_label"], node["slug"])
+        else:
+            unmatched.add(label)
+
+    fallback_canon = dedupe_labels(unmatched, aliases={k: v for k, v in aliases.items() if k in unmatched})
+    for label in unmatched:
+        resolved[label] = (fallback_canon[label], None)
+
+    return resolved
 
 
 def _parse_note(path: Path) -> tuple[dict, str]:
@@ -30,9 +59,13 @@ def build_graph(vault_path: str, focus_slug: str | None = None, only_focus: bool
     concepts), entity = 회색 노드(frontmatter의 entities, concept이 있으면
     concept에 연결되고 없으면 note에 직접 연결), 공통 tag = 초록 노드를
     매개로 한 에지. concepts/entities frontmatter가 없는 이전 노트는 본문의
-    [[위키링크]]를 concept으로 취급하는 방식으로 하위 호환한다. 노드를 만들기
-    전에 vault 전체의 concept/entity 라벨을 dedup.dedupe_labels()로 한 번 병합해,
-    표기만 다른 같은 개념(대소문자/공백/유사 문구)이 별개 노드로 쪼개지지 않게 한다."""
+    [[위키링크]]를 concept으로 취급하는 방식으로 하위 호환한다.
+
+    concept/entity 노드의 라벨을 정할 때, node_store.py에 이미 물리적 노드
+    파일이 있는 라벨은 그 파일의 display_label을 그대로 쓴다(_resolve_labels) -
+    그래프 라벨과 클릭해서 들어가는 md 파일이 항상 정확히 일치하게 하기 위함.
+    아직 노드 파일이 없는 라벨들만 dedup.dedupe_labels()로 서로 병합해 새
+    대표 라벨을 고른다."""
     autonote_dir = Path(vault_path) / "AutoNote"
     if not autonote_dir.is_dir():
         return {"nodes": [], "edges": [], "focus": focus_slug}
@@ -117,33 +150,41 @@ def build_graph(vault_path: str, focus_slug: str | None = None, only_focus: bool
                 continue
             all_concept_labels.add(target)
 
-    concept_canon = dedupe_labels(all_concept_labels, aliases=concept_aliases)
-    entity_canon = dedupe_labels(all_entity_labels, aliases=entity_aliases)
+    # concept/entity 노드에 물리적 노드 파일(node_store.py)이 있으면 그래프가
+    # 별도로 대표 라벨을 계산하지 않고 그 파일의 display_label/slug를 그대로
+    # 쓴다(_resolve_labels 참고) - 그래프 라벨과 실제 md 파일이 항상 일치한다.
+    # 목록은 노드 수와 무관하게 폴더당 한 번만 스캔한다.
+    concept_nodes_store = list_nodes(NODE_STORE_ROOT, "concept")
+    entity_nodes_store = list_nodes(NODE_STORE_ROOT, "entity")
+    concept_resolved = _resolve_labels(all_concept_labels, concept_aliases, concept_nodes_store)
+    entity_resolved = _resolve_labels(all_entity_labels, entity_aliases, entity_nodes_store)
 
     for n in notes:
         claimed = {c["label"] for c in n["concepts"]} | {e["label"] for e in n["entities"]}
 
         for c in n["concepts"]:
-            canonical = concept_canon[c["label"]]
+            canonical, node_slug = concept_resolved[c["label"]]
             concept_id = f"concept:{canonical}"
             if concept_id not in seen_concept_nodes:
-                nodes.append({"id": concept_id, "label": canonical, "type": "concept"})
+                nodes.append({"id": concept_id, "label": canonical, "type": "concept", "node_slug": node_slug})
                 seen_concept_nodes.add(concept_id)
             edges.append({"source": n["slug"], "target": concept_id, "type": "link"})
 
         for entity in n["entities"]:
-            entity_canonical = entity_canon[entity["label"]]
+            entity_canonical, entity_node_slug = entity_resolved[entity["label"]]
             entity_id = f"entity:{entity_canonical}"
             if entity_id not in seen_entity_nodes:
-                nodes.append({"id": entity_id, "label": entity_canonical, "type": "entity"})
+                nodes.append(
+                    {"id": entity_id, "label": entity_canonical, "type": "entity", "node_slug": entity_node_slug}
+                )
                 seen_entity_nodes.add(entity_id)
 
             concept_label = entity.get("concept")
             if concept_label:
-                canonical = concept_canon[concept_label]
+                canonical, node_slug = concept_resolved[concept_label]
                 concept_id = f"concept:{canonical}"
                 if concept_id not in seen_concept_nodes:
-                    nodes.append({"id": concept_id, "label": canonical, "type": "concept"})
+                    nodes.append({"id": concept_id, "label": canonical, "type": "concept", "node_slug": node_slug})
                     seen_concept_nodes.add(concept_id)
                 edges.append({"source": concept_id, "target": entity_id, "type": "link"})
             else:
@@ -157,10 +198,10 @@ def build_graph(vault_path: str, focus_slug: str | None = None, only_focus: bool
                 continue  # frontmatter의 concepts/entities로 이미 처리됨
 
             # 하위 호환: concepts/entities frontmatter가 없던 이전 노트를 위한 fallback
-            canonical = concept_canon[target]
+            canonical, node_slug = concept_resolved[target]
             concept_id = f"concept:{canonical}"
             if concept_id not in seen_concept_nodes:
-                nodes.append({"id": concept_id, "label": canonical, "type": "concept"})
+                nodes.append({"id": concept_id, "label": canonical, "type": "concept", "node_slug": node_slug})
                 seen_concept_nodes.add(concept_id)
             edges.append({"source": n["slug"], "target": concept_id, "type": "link"})
 

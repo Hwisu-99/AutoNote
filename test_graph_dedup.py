@@ -10,9 +10,9 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from paper_notes.dedup import dedupe_labels, jaccard_estimate, minhash_signature, normalize_label
+from paper_notes.dedup import dedupe_labels, jaccard_estimate, labels_match, minhash_signature, normalize_label
 from paper_notes.dedup import _hash_permutations, _shingles
-from paper_notes.graph_builder import build_graph
+from paper_notes.graph_builder import _resolve_labels, build_graph
 
 FAILURES: list[str] = []
 
@@ -233,6 +233,59 @@ def test_build_graph_merges_via_alias_frontmatter() -> None:
         )
 
 
+def test_labels_match_covers_dedupe_labels_criteria() -> None:
+    """labels_match()는 node_store.py가 graph_builder.py의 dedupe_labels()와
+    같은 기준으로 단건 비교를 할 수 있게 뽑아낸 함수다. dedupe_labels()가 쓰는
+    세 기준(정규화 완전일치/MinHash 유사도/숫자 불일치 차단)이 단건 비교에서도
+    그대로 적용되는지 확인한다. 실제로 겪은 버그: 그래프용 dedup이 대표로 고른
+    "Selective State Space Model"(단수)과 node_store 파일의 display_label
+    "Selective State Space Models"(복수)가 문자열은 다르지만 이 기준으로는
+    같은 개념으로 판단돼야 한다."""
+    check(
+        "labels_match: 정규화 완전일치(대소문자 차이)",
+        labels_match("Self-Attention", "self attention"),
+    )
+    check(
+        "labels_match: 단수/복수 차이는 MinHash 유사도로 같은 개념 판정",
+        labels_match("Selective State Space Model", "Selective State Space Models"),
+    )
+    check(
+        "labels_match: 무관한 라벨은 매칭 안 됨",
+        not labels_match("Selective State Space Model", "Byte Pair Encoding"),
+    )
+    check(
+        "labels_match: 숫자만 다른 버전은 매칭 안 됨(dedupe_labels의 숫자 가드와 동일)",
+        not labels_match("ResNet-50", "ResNet-101"),
+    )
+
+
+def test_resolve_labels_uses_node_store_display_label_when_matched() -> None:
+    """node_store 파일이 있는 라벨은 그래프가 별도로 대표 라벨을 계산하지 않고
+    그 파일의 display_label을 그대로 써야 한다(그래프 라벨 = 실제 md 파일이
+    항상 일치하게). 순수 함수라 파일 시스템 없이 가짜 노드 목록으로 테스트한다."""
+    store_nodes = [
+        {
+            "slug": "selective-state-space-models",
+            "display_label": "Selective State Space Models",
+            "aliases": ["SSM"],
+        },
+    ]
+    raw_labels = {"Selective State Space Model", "Byte Pair Encoding"}
+    resolved = _resolve_labels(raw_labels, {}, store_nodes)
+
+    check(
+        "node_store에 매칭되는 라벨은 파일의 display_label/slug를 그대로 씀",
+        resolved["Selective State Space Model"]
+        == ("Selective State Space Models", "selective-state-space-models"),
+        str(resolved),
+    )
+    check(
+        "매칭 안 되는 라벨은 fallback dedupe_labels로 처리되고 node_slug는 None",
+        resolved["Byte Pair Encoding"][1] is None,
+        str(resolved),
+    )
+
+
 def main() -> None:
     test_normalize_label()
     test_minhash_similarity_ordering()
@@ -245,6 +298,8 @@ def main() -> None:
     test_dedupe_labels_empty_and_single()
     test_build_graph_merges_cross_note_concepts()
     test_build_graph_merges_via_alias_frontmatter()
+    test_labels_match_covers_dedupe_labels_criteria()
+    test_resolve_labels_uses_node_store_display_label_when_matched()
 
     print()
     if FAILURES:
