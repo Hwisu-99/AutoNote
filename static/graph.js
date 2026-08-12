@@ -121,7 +121,12 @@ function renderGraph(data) {
     .data(nodes)
     .join('circle')
     .attr('r', (d) => (d.type === 'note' ? 8 : 6))
-    .attr('class', (d) => `node-${d.type}`)
+    .attr('class', (d) => {
+      // concept/entity는 node_store.py에 실제 md 파일이 있을 때만(node_slug) 클릭
+      // 가능 - 아직 마이그레이션 안 된 노드는 흐리게 표시해 비활성 상태를 알린다.
+      const unavailable = (d.type === 'concept' || d.type === 'entity') && !d.node_slug;
+      return `node-${d.type}` + (unavailable ? ' node-disabled' : '');
+    })
     .call(drag(simulation));
 
   const label = g.append('g')
@@ -138,6 +143,26 @@ function renderGraph(data) {
   node
     .on('mouseenter', (event, d) => highlightNode(d.id))
     .on('mouseleave', clearHighlight);
+
+  // d3.drag가 붙은 요소는 드래그 도중 마우스가 조금이라도 움직이면 그 뒤에 오는
+  // 브라우저 native 'click' 이벤트를 d3-drag가 내부적으로 삼켜버린다(알려진
+  // 동작). 그 native click에 기대는 대신, pointerdown/pointerup을 직접 붙여서
+  // "누른 지점과 뗀 지점이 화면 픽셀 기준으로 충분히 가깝고 빠르게 끝났으면
+  // 클릭"으로 판정한다 - 화면 좌표(clientX/Y)를 쓰므로 그래프를 확대/축소해도
+  // 판정 기준이 흔들리지 않는다. Obsidian 그래프 뷰도 노드 클릭 시 같은 방식
+  // (누른 위치 근처에서 뗐는지)으로 클릭과 드래그를 구분한다.
+  let pointerDownAt = null;
+  node
+    .on('pointerdown', (event) => {
+      pointerDownAt = { x: event.clientX, y: event.clientY, t: Date.now() };
+    })
+    .on('pointerup', (event, d) => {
+      if (!pointerDownAt) return;
+      const moved = Math.hypot(event.clientX - pointerDownAt.x, event.clientY - pointerDownAt.y);
+      const elapsed = Date.now() - pointerDownAt.t;
+      pointerDownAt = null;
+      if (moved < 6 && elapsed < 600) handleNodeClick(d);
+    });
 
   function highlightNode(hoveredId) {
     const connectedIds = new Set([hoveredId]);
@@ -187,5 +212,125 @@ function drag(sim) {
       d.fx = null; d.fy = null;
     });
 }
+
+// 노드 클릭 시 그래프 화면을 그 노드의 md 노트 화면으로 전환한다(Obsidian에서
+// 노드를 클릭해 노트로 들어가는 것과 같은 경험). note는 항상 vault에 md가 있어
+// 바로 이동 가능하고, concept/entity는 node_store.py에 실제 노드 파일이 있을
+// 때만(node_slug) 이동 가능 - 없는 쪽은 렌더링 단계에서 이미 클릭 비활성화 처리됨.
+function handleNodeClick(d) {
+  if (d.type === 'note') {
+    openNodeView('note', d.id, d.label);
+    return;
+  }
+  if ((d.type === 'concept' || d.type === 'entity') && d.node_slug) {
+    openNodeView(d.type, d.node_slug, d.label);
+  }
+}
+
+function escapeHtml(text) {
+  return String(text ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+// 노드 md 파일은 frontmatter + 간단한 마크다운(헤딩/목록/굵게/wikilink/구분선)
+// 정도만 쓰므로, 별도 라이브러리 없이 그 범위만 직접 렌더링한다. PDF/LLM에서
+// 추출된 텍스트가 들어있어 신뢰할 수 없는 입력이므로 escapeHtml을 먼저 거친 뒤에만
+// 마크다운 문법에 해당하는 태그를 끼워넣는다(escape 전 원본에 직접 태그를 넣지 않음).
+function renderInline(text) {
+  let html = escapeHtml(text);
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, target, display) => {
+    return `<span class="md-wikilink">${display || target}</span>`;
+  });
+  return html;
+}
+
+function renderMarkdown(markdown) {
+  const parts = [];
+  let listOpen = false;
+  let paragraph = [];
+
+  const flushParagraph = () => {
+    if (paragraph.length) {
+      parts.push(`<p class="md-p">${renderInline(paragraph.join(' '))}</p>`);
+      paragraph = [];
+    }
+  };
+  const closeList = () => {
+    if (listOpen) { parts.push('</ul>'); listOpen = false; }
+  };
+
+  for (const rawLine of markdown.split('\n')) {
+    const line = rawLine.trim();
+
+    if (line.startsWith('<!--')) {
+      flushParagraph();
+      closeList();
+      if (line.includes('user-notes')) parts.push('<div class="md-h3">개인 메모</div>');
+      continue;
+    }
+    if (!line) { flushParagraph(); closeList(); continue; }
+    if (line === '---') { flushParagraph(); closeList(); parts.push('<hr class="md-hr">'); continue; }
+
+    const h3 = line.match(/^###\s+(.*)$/);
+    if (h3) { flushParagraph(); closeList(); parts.push(`<div class="md-h3">${renderInline(h3[1])}</div>`); continue; }
+    const h2 = line.match(/^##\s+(.*)$/);
+    if (h2) { flushParagraph(); closeList(); parts.push(`<div class="md-h2">${renderInline(h2[1])}</div>`); continue; }
+    const h1 = line.match(/^#\s+(.*)$/);
+    if (h1) { flushParagraph(); closeList(); parts.push(`<div class="md-h2">${renderInline(h1[1])}</div>`); continue; }
+
+    const li = line.match(/^-\s+(.*)$/);
+    if (li) {
+      flushParagraph();
+      if (!listOpen) { parts.push('<ul class="md-ul">'); listOpen = true; }
+      parts.push(`<li>${renderInline(li[1])}</li>`);
+      continue;
+    }
+
+    closeList();
+    paragraph.push(line);
+  }
+  flushParagraph();
+  closeList();
+  return parts.join('\n');
+}
+
+async function openNodeView(type, slug, fallbackLabel) {
+  const bodyEl = document.getElementById('nodeModeBody');
+  bodyEl.innerHTML = `<div class="node-view-title">${escapeHtml(fallbackLabel)}</div><p class="node-view-body">불러오는 중...</p>`;
+  document.body.classList.add('node-mode');
+
+  let data;
+  try {
+    const res = await fetch(`/api/nodes/${type}/${encodeURIComponent(slug)}`);
+    if (!res.ok) throw new Error('not ok');
+    data = await res.json();
+  } catch {
+    bodyEl.innerHTML = `<div class="node-view-title">${escapeHtml(fallbackLabel)}</div><p class="node-view-body">노트를 불러오지 못했습니다.</p>`;
+    return;
+  }
+
+  const metaChips = [];
+  if (data.type === 'note') {
+    if (data.meta.authors) metaChips.push(`<span>저자: ${escapeHtml(data.meta.authors)}</span>`);
+    if (data.meta.tags?.length) metaChips.push(`<span>${escapeHtml(data.meta.tags.map((t) => '#' + t).join(' '))}</span>`);
+  } else {
+    if (data.meta.category) metaChips.push(`<span>카테고리: ${escapeHtml(data.meta.category)}</span>`);
+    if (data.meta.aliases?.length) metaChips.push(`<span>다른 표기: ${escapeHtml(data.meta.aliases.join(', '))}</span>`);
+    if (data.meta.sources?.length) metaChips.push(`<span>등장 논문 ${data.meta.sources.length}편</span>`);
+  }
+
+  bodyEl.innerHTML = `
+    <div class="node-view-title">${escapeHtml(data.title)}</div>
+    <div class="node-view-meta">${metaChips.join('')}</div>
+    <div class="node-view-body">${renderMarkdown(data.body_markdown)}</div>
+  `;
+}
+
+document.getElementById('btnBackToGraph').addEventListener('click', () => {
+  document.body.classList.remove('node-mode');
+});
 
 loadGraph(null);

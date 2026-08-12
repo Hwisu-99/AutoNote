@@ -4,9 +4,11 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 
+import yaml
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
@@ -40,6 +42,20 @@ def get_vault_path() -> str:
 
 def _event(stage: str, percent: int, message: str, **extra) -> str:
     return json.dumps({"stage": stage, "percent": percent, "message": message, **extra}, ensure_ascii=False) + "\n"
+
+
+_FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)
+
+
+def _parse_frontmatter(text: str) -> tuple[dict, str]:
+    match = _FRONTMATTER_RE.match(text)
+    if not match:
+        return {}, text
+    try:
+        frontmatter = yaml.safe_load(match.group(1)) or {}
+    except yaml.YAMLError:
+        frontmatter = {}
+    return frontmatter, text[match.end() :]
 
 
 async def _summarize_cancellable(paper_text: str, request: Request) -> tuple[dict, float] | None:
@@ -170,6 +186,49 @@ async def get_papers():
         return {"papers": list_papers()}
     except Exception as exc:  # noqa: BLE001 - Supabase 미설정/오류 시 빈 목록으로 응답
         return {"papers": [], "error": str(exc)}
+
+
+@app.get("/api/nodes/{node_type}/{slug}")
+async def get_node(node_type: str, slug: str):
+    """그래프 뷰에서 노드를 클릭했을 때 보여줄 md 내용을 반환한다. note는 vault의
+    논문 노트, concept/entity는 node_store.py가 관리하는 별도 노드 파일에서 읽는다."""
+    if node_type == "note":
+        vault_path = get_vault_path()
+        path = Path(vault_path) / "AutoNote" / slug / f"{slug}.md"
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="논문 노트를 찾을 수 없습니다.")
+        frontmatter, body = _parse_frontmatter(path.read_text(encoding="utf-8"))
+        return {
+            "type": "note",
+            "slug": slug,
+            "title": frontmatter.get("title") or slug,
+            "meta": {"authors": frontmatter.get("authors"), "tags": frontmatter.get("tags") or []},
+            "body_markdown": body.strip(),
+        }
+
+    if node_type not in ("concept", "entity"):
+        raise HTTPException(status_code=404, detail="알 수 없는 노드 타입입니다.")
+
+    dir_name = "_concepts" if node_type == "concept" else "_entities"
+    path = Path(NODE_STORE_ROOT) / dir_name / f"{slug}.md"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="노드 파일을 찾을 수 없습니다.")
+
+    frontmatter, body = _parse_frontmatter(path.read_text(encoding="utf-8"))
+    if frontmatter.get("redirect_to"):
+        raise HTTPException(status_code=404, detail="다른 노드로 병합되어 사라진 노드입니다.")
+
+    return {
+        "type": node_type,
+        "slug": slug,
+        "title": frontmatter.get("display_label") or slug,
+        "meta": {
+            "aliases": frontmatter.get("aliases") or [],
+            "category": frontmatter.get("category"),
+            "sources": frontmatter.get("sources") or [],
+        },
+        "body_markdown": body.strip(),
+    }
 
 
 @app.get("/api/papers/{slug}/summary")
