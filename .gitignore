@@ -5,3 +5,9 @@ __pycache__/
 
 # 클로드 테스트용 임시 폴더. 실제 배포 시에는 필요 없음
 /offline_test
+
+# concept/entity 노드 파일 저장소(paper_notes/node_store.py). Obsidian vault가
+# 아니라 이 프로젝트 폴더 아래에 저장되며, 사용자별 로컬 데이터라 버전관리 제외
+/_concepts
+/_entities
+/config

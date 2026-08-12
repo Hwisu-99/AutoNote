@@ -16,6 +16,7 @@ from paper_notes.claude_client import summarize_paper
 from paper_notes.excalidraw_writer import write_diagram
 from paper_notes.extractor import extract_text
 from paper_notes.graph_builder import build_graph
+from paper_notes.node_store import NODE_STORE_ROOT, resolve_or_create_node
 from paper_notes.obsidian_writer import delete_note as delete_local_note
 from paper_notes.obsidian_writer import write_note, write_summary_json
 from paper_notes.supabase_writer import delete_note as delete_remote_note
@@ -82,6 +83,21 @@ async def run_pipeline(tmp_path: str, vault_path: str, request: Request):
 
         if await request.is_disconnected():
             return
+
+        yield _event("nodes", 65, "concept/entity 노드 파일 갱신 중...")
+        try:
+            for c in summary.get("concepts", []):
+                resolve_or_create_node(
+                    NODE_STORE_ROOT, "concept", c["label"], c.get("aliases", []),
+                    title_slug, summary["title"], category=c.get("category"),
+                )
+            for e in summary.get("entities", []):
+                resolve_or_create_node(
+                    NODE_STORE_ROOT, "entity", e["label"], e.get("aliases", []),
+                    title_slug, summary["title"],
+                )
+        except Exception as exc:  # noqa: BLE001 - 노드 파일 갱신 실패가 파이프라인 전체를 막지 않음
+            print(f"  [경고] concept/entity 노드 파일 갱신 실패: {exc}")
 
         yield _event("diagram", 70, "Excalidraw 개념도 생성 중...")
         excalidraw_filename = write_diagram(vault_path, title_slug, summary)
