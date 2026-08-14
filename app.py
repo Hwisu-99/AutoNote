@@ -232,10 +232,26 @@ async def get_graph(focus: str | None = None, only_focus: bool = False):
 
 @app.get("/api/papers")
 async def get_papers():
+    """저장된 논문 목록을 {slug, title} 쌍으로 반환한다. slug(=저장 파일명)는 경로
+    길이 제한 때문에 잘릴 수 있어 화면 표시용으로 부적합하므로, 로컬 vault 노트의
+    frontmatter title(원본 전체 제목)을 같이 읽어 붙인다 - 프론트는 표시엔 title,
+    그래프 포커스/삭제 등 실제 동작엔 slug를 쓴다."""
     try:
-        return {"papers": list_papers()}
+        slugs = list_papers()
     except Exception as exc:  # noqa: BLE001 - Supabase 미설정/오류 시 빈 목록으로 응답
         return {"papers": [], "error": str(exc)}
+
+    vault_path = os.getenv("OBSIDIAN_VAULT_PATH")
+    papers = []
+    for slug in slugs:
+        title = slug
+        if vault_path:
+            md_path = Path(vault_path) / "AutoNote" / slug / f"{slug}.md"
+            if md_path.is_file():
+                frontmatter, _ = _parse_frontmatter(md_path.read_text(encoding="utf-8"))
+                title = frontmatter.get("title") or slug
+        papers.append({"slug": slug, "title": title})
+    return {"papers": papers}
 
 
 @app.get("/api/nodes/{node_type}/{slug}")

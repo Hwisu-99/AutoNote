@@ -47,28 +47,29 @@ function renderPaperList() {
     return;
   }
 
-  for (const slug of papersCache) {
+  for (const paper of papersCache) {
+    const { slug, title: paperTitle } = paper;
     const row = document.createElement('div');
     row.className = 'paper-row' + (slug === selectedPaperSlug ? ' selected' : '');
 
     const title = document.createElement('span');
     title.className = 'paper-title';
-    title.textContent = slug;
-    title.title = slug;
+    title.textContent = paperTitle;
+    title.title = paperTitle;
 
     const graphBtn = document.createElement('button');
     graphBtn.type = 'button';
     graphBtn.className = 'paper-graph-btn';
-    graphBtn.title = `${slug} Knowledge Graph 보기`;
+    graphBtn.title = `${paperTitle} Knowledge Graph 보기`;
     graphBtn.innerHTML = GRAPH_ICON_SVG;
     graphBtn.addEventListener('click', () => selectPaperGraph(slug));
 
     const deleteBtn = document.createElement('button');
     deleteBtn.type = 'button';
     deleteBtn.className = 'paper-delete-btn';
-    deleteBtn.title = `${slug} 삭제`;
+    deleteBtn.title = `${paperTitle} 삭제`;
     deleteBtn.innerHTML = DELETE_ICON_SVG;
-    deleteBtn.addEventListener('click', () => deletePaper(slug));
+    deleteBtn.addEventListener('click', () => deletePaper(slug, paperTitle));
 
     row.appendChild(title);
     row.appendChild(graphBtn);
@@ -106,8 +107,8 @@ async function loadGraphSummaryCard(slug) {
     </div>`;
 }
 
-async function deletePaper(slug) {
-  if (!confirm(`"${slug}"를 삭제할까요?\nObsidian 노트와 Supabase에 저장된 사본이 모두 삭제되며 되돌릴 수 없습니다.`)) {
+async function deletePaper(slug, title) {
+  if (!confirm(`"${title}"를 삭제할까요?\nObsidian 노트와 Supabase에 저장된 사본이 모두 삭제되며 되돌릴 수 없습니다.`)) {
     return;
   }
 
