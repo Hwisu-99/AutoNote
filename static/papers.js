@@ -101,7 +101,7 @@ async function loadGraphSummaryCard(slug) {
   graphSummaryEl.innerHTML = `
     <div class="card result">
       <strong>${data.title}</strong>
-      <p>${data.one_line_summary}</p>
+      <p>${data.tldr ?? data.one_line_summary ?? ''}</p>
       <div class="meta-row"><span>API 비용</span><code>$${data.api_cost_usd.toFixed(4)}</code></div>
       ${renderNodeSummaryRows(data.node_summary)}
     </div>`;

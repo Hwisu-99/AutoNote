@@ -289,10 +289,25 @@ function renderInline(text, links) {
   return html.replace(/\uE000(\d+)\uE001/g, (_, i) => stashed[Number(i)]);
 }
 
+// 표 셀 구분자로 쓰이는 "|"만 나누고, obsidian_writer.py의 _table_cell()이 이스케이프해
+// 리터럴 파이프로 심어둔 "\|"는 다시 "|"로 되돌린다.
+function splitTableRow(line) {
+  const trimmed = line.trim().replace(/^\|/, '').replace(/\|\s*$/, '');
+  return trimmed.split(/(?<!\\)\|/).map((cell) => cell.trim().replace(/\\\|/g, '|'));
+}
+
+function isTableSeparatorRow(line) {
+  return /^\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?$/.test(line.trim());
+}
+
 function renderMarkdown(markdown, links = {}) {
   const parts = [];
   let listOpen = false;
+  let bqOpen = false;
   let paragraph = [];
+  let tableBuffer = [];
+  let codeFenceLang = null;
+  let codeLines = [];
 
   const flushParagraph = () => {
     if (paragraph.length) {
@@ -303,25 +318,81 @@ function renderMarkdown(markdown, links = {}) {
   const closeList = () => {
     if (listOpen) { parts.push('</ul>'); listOpen = false; }
   };
+  const closeBlockquote = () => {
+    if (bqOpen) { parts.push('</blockquote>'); bqOpen = false; }
+  };
+  // 표는 최소 2줄(헤더 + 구분자 행)이 있어야 진짜 표로 인정한다. 구분자 행이 없으면
+  // (본문에 우연히 "|"가 섞인 경우 등) 표로 오인하지 않고 원래대로 문단 취급한다.
+  const flushTable = () => {
+    if (!tableBuffer.length) return;
+    if (tableBuffer.length >= 2 && isTableSeparatorRow(tableBuffer[1])) {
+      const header = splitTableRow(tableBuffer[0]);
+      const bodyRows = tableBuffer.slice(2).map(splitTableRow);
+      parts.push(
+        '<div class="md-table-wrap"><table class="md-table"><thead><tr>' +
+        header.map((h) => `<th>${renderInline(h, links)}</th>`).join('') +
+        '</tr></thead><tbody>' +
+        bodyRows.map((row) => '<tr>' + row.map((c) => `<td>${renderInline(c, links)}</td>`).join('') + '</tr>').join('') +
+        '</tbody></table></div>'
+      );
+    } else {
+      parts.push(`<p class="md-p">${renderInline(tableBuffer.join(' '), links)}</p>`);
+    }
+    tableBuffer = [];
+  };
+  const flushAll = () => { flushParagraph(); closeList(); closeBlockquote(); flushTable(); };
 
   for (const rawLine of markdown.split('\n')) {
     const line = rawLine.trim();
 
+    const fence = line.match(/^```\s*(\w*)\s*$/);
+    if (codeFenceLang !== null) {
+      if (fence) {
+        const escaped = escapeHtml(codeLines.join('\n'));
+        parts.push(
+          codeFenceLang === 'mermaid'
+            ? `<pre class="mermaid">${escaped}</pre>`
+            : `<pre class="md-code"><code>${escaped}</code></pre>`
+        );
+        codeFenceLang = null;
+        codeLines = [];
+      } else {
+        codeLines.push(rawLine);
+      }
+      continue;
+    }
+    if (fence) { flushAll(); codeFenceLang = fence[1] || 'text'; continue; }
+
     if (line.startsWith('<!--')) {
-      flushParagraph();
-      closeList();
+      flushAll();
       if (line.includes('user-notes')) parts.push('<div class="md-h3">개인 메모</div>');
       continue;
     }
-    if (!line) { flushParagraph(); closeList(); continue; }
-    if (line === '---') { flushParagraph(); closeList(); parts.push('<hr class="md-hr">'); continue; }
+    if (!line) { flushAll(); continue; }
+    if (line === '---') { flushAll(); parts.push('<hr class="md-hr">'); continue; }
 
     const h3 = line.match(/^###\s+(.*)$/);
-    if (h3) { flushParagraph(); closeList(); parts.push(`<div class="md-h3">${renderInline(h3[1], links)}</div>`); continue; }
+    if (h3) { flushAll(); parts.push(`<div class="md-h3">${renderInline(h3[1], links)}</div>`); continue; }
     const h2 = line.match(/^##\s+(.*)$/);
-    if (h2) { flushParagraph(); closeList(); parts.push(`<div class="md-h2">${renderInline(h2[1], links)}</div>`); continue; }
+    if (h2) { flushAll(); parts.push(`<div class="md-h2">${renderInline(h2[1], links)}</div>`); continue; }
     const h1 = line.match(/^#\s+(.*)$/);
-    if (h1) { flushParagraph(); closeList(); parts.push(`<div class="md-h2">${renderInline(h1[1], links)}</div>`); continue; }
+    if (h1) { flushAll(); parts.push(`<div class="md-h2">${renderInline(h1[1], links)}</div>`); continue; }
+
+    if (line.startsWith('|') && line.endsWith('|')) {
+      flushParagraph(); closeList(); closeBlockquote();
+      tableBuffer.push(line);
+      continue;
+    }
+    flushTable();
+
+    const bq = line.match(/^>\s?(.*)$/);
+    if (bq) {
+      flushParagraph(); closeList();
+      if (!bqOpen) { parts.push('<blockquote class="md-blockquote">'); bqOpen = true; }
+      parts.push(`<p>${renderInline(bq[1], links)}</p>`);
+      continue;
+    }
+    closeBlockquote();
 
     const li = line.match(/^-\s+(.*)$/);
     if (li) {
@@ -334,8 +405,7 @@ function renderMarkdown(markdown, links = {}) {
     closeList();
     paragraph.push(line);
   }
-  flushParagraph();
-  closeList();
+  flushAll();
   return parts.join('\n');
 }
 
@@ -368,10 +438,15 @@ async function openNodeView(type, slug, fallbackLabel) {
   // 편집(+이미지 붙여넣기)을 지원한다.
   const editable = data.type === 'concept' || data.type === 'entity';
 
+  // obsidian_writer.py는 본문을 항상 "# {title}"로 시작한다(Obsidian에서 노트를
+  // 열었을 때 제목이 보이도록). 여기선 위 .node-view-title이 이미 같은 제목을
+  // 보여주므로, 본문 첫 줄이 그 h1이면 중복 표시되지 않게 걷어낸다.
+  const bodyMarkdown = data.body_markdown.replace(/^#\s+.*(\n+|$)/, '');
+
   bodyEl.innerHTML = `
     <div class="node-view-title">${escapeHtml(data.title)}</div>
     <div class="node-view-meta">${metaChips.join('')}</div>
-    <div class="node-view-body" id="nodeViewRenderedBody">${renderMarkdown(data.body_markdown, data.links)}</div>
+    <div class="node-view-body" id="nodeViewRenderedBody">${renderMarkdown(bodyMarkdown, data.links)}</div>
     ${editable ? `
       <div class="node-view-edit-bar">
         <button class="graph-btn" id="btnEditNotes">메모 편집</button>
@@ -388,6 +463,16 @@ async function openNodeView(type, slug, fallbackLabel) {
   `;
 
   if (editable) wireNoteEditing(type, slug, data.title, data.user_markdown || '');
+  renderMermaidBlocks();
+}
+
+// renderMarkdown()은 mermaid 코드펜스를 <pre class="mermaid"> 텍스트로만 만들어둔다 -
+// 실제 다이어그램 SVG로 그리는 건 mermaid.js가 그 요소를 보고 나서야 할 수 있으므로,
+// DOM에 innerHTML로 끼워넣은 "다음"에 별도로 호출해야 한다.
+function renderMermaidBlocks() {
+  if (typeof mermaid === 'undefined') return;
+  const blocks = document.querySelectorAll('#nodeModeBody pre.mermaid');
+  if (blocks.length) mermaid.run({ nodes: blocks });
 }
 
 function wireNoteEditing(type, slug, title, userMarkdown) {

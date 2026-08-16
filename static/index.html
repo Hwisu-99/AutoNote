@@ -239,6 +239,15 @@
 </div>
 
 <script src="https://d3js.org/d3.v7.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>
+  // startOnLoad:false - 노트를 열 때(openNodeView) graph.js가 mermaid.run()을 직접
+  // 호출한다. 페이지에 실제로 있는 mermaid 블록만 그 순간 골라 그리기 위함.
+  mermaid.initialize({
+    startOnLoad: false,
+    theme: window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default',
+  });
+</script>
 <script src="/graph.js"></script>
 <script src="/papers.js"></script>
 <script>
@@ -337,7 +346,7 @@ async function handleFile(file) {
           statusEl.innerHTML = `
             <div class="card result">
               <strong>${evt.title}</strong>
-              <p>${evt.one_line_summary}</p>
+              <p>${evt.tldr}</p>
               <div class="meta-row"><span>노트</span><code>${evt.note_path}</code></div>
               <div class="meta-row"><span>개념도</span><code>${evt.excalidraw_filename}</code></div>
               <div class="meta-row"><span>API 비용</span><code>$${evt.api_cost_usd.toFixed(4)}</code></div>
