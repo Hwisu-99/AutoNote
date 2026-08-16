@@ -72,13 +72,36 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
 _WIKILINK_RE = re.compile(r"!?\[\[([^\]|#]+)(?:\|[^\]]+)?\]\]")
 
 
-def _resolve_wikilinks(vault_path: str, body: str) -> dict[str, dict]:
+def _frontmatter_label_aliases(frontmatter: dict) -> dict[str, list[str]]:
+    """frontmatter의 concepts/entities에서 {label: aliases} 사전을 만든다.
+    _resolve_wikilinks()가 본문의 [[label]]을 node_store와 다시 매칭할 때, 처리
+    시점(resolve_or_create_node)엔 있었던 alias 정보를 그대로 넘겨주기 위함이다.
+    aliases 필드 도입 이전 노트는 concepts가 문자열 리스트였으므로 함께 정규화한다."""
+    result: dict[str, list[str]] = {}
+    for c in frontmatter.get("concepts") or []:
+        if isinstance(c, str):
+            result[c] = []
+        else:
+            result[c["label"]] = c.get("aliases") or []
+    for e in frontmatter.get("entities") or []:
+        result[e["label"]] = e.get("aliases") or []
+    return result
+
+
+def _resolve_wikilinks(vault_path: str, body: str, label_aliases: dict[str, list[str]] | None = None) -> dict[str, dict]:
     """본문의 [[wikilink]] 대상들을 note(vault) 또는 concept/entity(node_store)로
     풀어서 {원본 타깃 텍스트: {type, slug}}를 반환한다. 프론트가 이걸로 위키링크를
     실제로 클릭 가능하게 만들지(어디로 보낼지) 판단한다. node 파일 자신이 만드는
     "## 등장 논문" 링크는 대상이 이미 논문 slug라 바로 맞아떨어지고, 논문 본문의
     concept/entity 위키링크는 그 논문이 직접 뽑은 원본 라벨이라 node_store와
-    퍼지 매칭(find_node_fuzzy)까지 거쳐야 한다."""
+    퍼지 매칭(find_node_fuzzy)까지 거쳐야 한다.
+
+    label_aliases(보통 _frontmatter_label_aliases()로 만든 이 노트 자신의 concepts/
+    entities alias 사전)를 함께 넘기면, 처리 시점(resolve_or_create_node)엔 label+alias
+    둘 다로 node_store와 매칭했던 것을 여기서도 재현할 수 있다 - alias 없이 label
+    텍스트만으로는 못 잡는 경우(예: 이 논문은 "체크포인트 엔진"이라 쓰고 alias로만
+    "Checkpoint Engine"을 줬는데 node_store엔 그 영어 표기로 등록된 경우)가 있어서다."""
+    label_aliases = label_aliases or {}
     targets = set()
     for m in _WIKILINK_RE.finditer(body):
         target = m.group(1).strip()
@@ -98,11 +121,12 @@ def _resolve_wikilinks(vault_path: str, body: str) -> dict[str, dict]:
         if (Path(vault_path) / "AutoNote" / target / f"{target}.md").is_file():
             links[target] = {"type": "note", "slug": target}
             continue
-        concept_match = find_node_fuzzy(concept_nodes, target, index=concept_idx)
+        aliases = label_aliases.get(target)
+        concept_match = find_node_fuzzy(concept_nodes, target, aliases, index=concept_idx)
         if concept_match:
             links[target] = {"type": "concept", "slug": concept_match["slug"]}
             continue
-        entity_match = find_node_fuzzy(entity_nodes, target, index=entity_idx)
+        entity_match = find_node_fuzzy(entity_nodes, target, aliases, index=entity_idx)
         if entity_match:
             links[target] = {"type": "entity", "slug": entity_match["slug"]}
     return links
@@ -271,7 +295,7 @@ async def get_node(node_type: str, slug: str):
             "title": frontmatter.get("title") or slug,
             "meta": {"authors": frontmatter.get("authors"), "tags": frontmatter.get("tags") or []},
             "body_markdown": body.strip(),
-            "links": _resolve_wikilinks(vault_path, body),
+            "links": _resolve_wikilinks(vault_path, body, _frontmatter_label_aliases(frontmatter)),
         }
 
     if node_type not in ("concept", "entity"):
