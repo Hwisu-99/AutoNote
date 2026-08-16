@@ -187,7 +187,7 @@ async def run_pipeline(tmp_path: str, vault_path: str, request: Request):
 
         result = {
             "title": summary["title"],
-            "one_line_summary": summary["one_line_summary"],
+            "tldr": summary["tldr"],
             "note_path": note_path,
             "excalidraw_filename": excalidraw_filename,
             "api_cost_usd": round(api_cost_usd, 4),

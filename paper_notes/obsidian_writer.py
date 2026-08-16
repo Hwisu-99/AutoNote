@@ -7,6 +7,13 @@ from pathlib import Path
 import yaml
 
 
+def _table_cell(text: object) -> str:
+    """마크다운 표 셀에 안전하게 넣을 수 있도록 파이프/줄바꿈을 이스케이프한다.
+    Claude가 만든 자유 텍스트(claim/evidence/description/note)를 표 셀에 그대로
+    넣으면 원문에 `|`나 개행이 섞였을 때 표가 깨지므로 한 번 거쳐야 한다."""
+    return str(text).replace("|", "\\|").replace("\n", " ").strip()
+
+
 def write_note(vault_path: str, summary: dict, title_slug: str, excalidraw_filename: str) -> str:
     """요약 결과를 Obsidian vault의 논문별 폴더에 마크다운 노트로 저장하고, 저장된 파일 경로를 반환한다."""
     folder = Path(vault_path) / "AutoNote" / title_slug
@@ -16,22 +23,11 @@ def write_note(vault_path: str, summary: dict, title_slug: str, excalidraw_filen
     note_path = folder / filename
 
     tags = " ".join(f"#{t.replace(' ', '_')}" for t in summary.get("tags", []))
-    contributions = "\n".join(f"- {c}" for c in summary.get("key_contributions", []))
 
     concepts = summary.get("concepts", [])
-    concept_label_by_id = {c["id"]: c["label"] for c in concepts}
-    concept_links = "\n".join(f"- [[{c['label']}]]" for c in concepts)
-
-    relationship_lines = []
-    for r in summary.get("relationships", []):
-        from_label = concept_label_by_id.get(r["from_id"], r["from_id"])
-        to_label = concept_label_by_id.get(r["to_id"], r["to_id"])
-        label = r.get("label")
-        arrow = f"→ ({label}) →" if label else "→"
-        relationship_lines.append(f"- [[{from_label}]] {arrow} [[{to_label}]]")
-    relationships = "\n".join(relationship_lines)
-
     entities = summary.get("entities", [])
+    concept_label_by_id = {c["id"]: c["label"] for c in concepts}
+
     entities_frontmatter = [
         {
             "label": e["label"],
@@ -40,20 +36,6 @@ def write_note(vault_path: str, summary: dict, title_slug: str, excalidraw_filen
         }
         for e in entities
     ]
-
-    entities_by_concept: dict[str | None, list[str]] = {}
-    for e in entities_frontmatter:
-        entities_by_concept.setdefault(e["concept"], []).append(e["label"])
-
-    concept_lines = []
-    for c in concepts:
-        concept_lines.append(f"- [[{c['label']}]]")
-        for entity_label in entities_by_concept.get(c["label"], []):
-            concept_lines.append(f"  - [[{entity_label}]]")
-    concept_links = "\n".join(concept_lines)
-
-    standalone_entities = entities_by_concept.get(None, [])
-    standalone_entity_links = "\n".join(f"- [[{label}]]" for label in standalone_entities)
 
     frontmatter = {
         "title": summary["title"],
@@ -64,6 +46,57 @@ def write_note(vault_path: str, summary: dict, title_slug: str, excalidraw_filen
     }
     frontmatter_yaml = yaml.safe_dump(frontmatter, allow_unicode=True, sort_keys=False).strip()
 
+    source_meta = summary.get("source_meta", "").strip()
+    meta_line = f"*{source_meta}*\n" if source_meta else ""
+
+    problem_motivation = "\n".join(f"- {b}" for b in summary.get("problem_motivation", []))
+
+    claims_rows = "\n".join(
+        f"| {i} | {_table_cell(c['claim'])} | {_table_cell(c['evidence'])} |"
+        for i, c in enumerate(summary.get("claims", []), start=1)
+    )
+    claims_table = f"| # | 주장 | 근거 |\n|---|---|---|\n{claims_rows}" if claims_rows else "_없음_"
+
+    reference_rows = [
+        f"| [[{_table_cell(c['label'])}]] | {_table_cell(c.get('description', ''))} | {_table_cell(c.get('note', ''))} |"
+        for c in concepts
+    ]
+    for e in entities:
+        parent_label = concept_label_by_id.get(e.get("concept_id")) if e.get("concept_id") else None
+        note = parent_label if parent_label else e.get("note", "")
+        reference_rows.append(
+            f"| [[{_table_cell(e['label'])}]] | {_table_cell(e.get('description', ''))} | {_table_cell(note)} |"
+        )
+    reference_table = (
+        "| 개념 | 설명 | 비고 |\n|---|---|---|\n" + "\n".join(reference_rows) if reference_rows else "_없음_"
+    )
+
+    deep_dive_sections = []
+    for c in concepts:
+        deep_dive = c.get("deep_dive")
+        if not deep_dive:
+            continue
+        marker = ""
+        if deep_dive["analogy_is_original"]:
+            marker = " (요약자 비유)"
+        elif deep_dive.get("quote_verified") is False:
+            marker = " ⚠️ (원문 인용 확인 안됨)"
+        deep_dive_sections.append(
+            f"### [[{c['label']}]]\n\n"
+            f"- **왜 필요했나**: {deep_dive['why_needed']}\n"
+            f"- **비유 또는 직관**: {deep_dive['analogy']}{marker}\n"
+            f"- **기존 방식과 차이**: {deep_dive['difference']}\n"
+            f"- **최소 예시**: {deep_dive['minimal_example']}\n"
+            f"- **왜 중요한가**: {deep_dive['why_important']}"
+        )
+    deep_dive_body = "\n\n".join(deep_dive_sections) if deep_dive_sections else "_선정된 핵심 개념 없음_"
+
+    results_body = "\n\n".join(
+        f"### {r['section_title']}\n{r['content_markdown']}" for r in summary.get("results", [])
+    )
+
+    flow_diagram = summary.get("flow_diagram_mermaid", "").strip()
+
     content = f"""---
 {frontmatter_yaml}
 ---
@@ -71,43 +104,35 @@ def write_note(vault_path: str, summary: dict, title_slug: str, excalidraw_filen
 # {summary['title']}
 
 **저자**: {summary['authors']}
-{tags}
+{meta_line}{tags}
 
-## 한 줄 요약
-{summary['one_line_summary']}
+> **TL;DR**: {summary['tldr']}
+
+## 🎯 문제 정의 & 동기
+{problem_motivation}
+
+## 💡 핵심 주장
+{claims_table}
+
+## 🔧 핵심 개념 / 사용 기술
+{reference_table}
 
 ## 개념도
 ![[{excalidraw_filename}]]
 
-## 핵심 개념
-{concept_links}
+## 🔬 핵심 개념 풀어보기
+{deep_dive_body}
 
-## 세부 용어
-{standalone_entity_links}
+## 📊 평가 결과
+{results_body}
 
-## 개념 간 관계
-{relationships}
-
-## 문제 정의
-{summary['problem']}
-
-## 기존 연구의 한계
-{summary['gap']}
-
-## 핵심 아이디어
-{summary['key_idea']}
-
-## 방법론
-{summary['method']}
-
-## 주요 기여
-{contributions}
-
-## 결과
-{summary['results']}
-
-## 한계
+## ⚠️ 한계
 {summary['limitations']}
+
+## 🧭 전체 흐름 지도
+```mermaid
+{flow_diagram}
+```
 """
 
     note_path.write_text(content, encoding="utf-8")
