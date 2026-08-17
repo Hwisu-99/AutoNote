@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -10,7 +11,7 @@ from pathlib import Path
 
 import yaml
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -25,6 +26,7 @@ from paper_notes.node_store import (
     get_user_section,
     list_nodes,
     node_index,
+    remove_source,
     resolve_or_create_node,
     save_attachment,
     update_user_section,
@@ -148,7 +150,7 @@ async def _summarize_cancellable(paper_text: str, request: Request) -> tuple[dic
             return None
 
 
-async def run_pipeline(tmp_path: str, vault_path: str, request: Request):
+async def run_pipeline(tmp_path: str, vault_path: str, request: Request, overwrite_slug: str | None = None):
     try:
         if await request.is_disconnected():
             return
@@ -158,6 +160,7 @@ async def run_pipeline(tmp_path: str, vault_path: str, request: Request):
         if not paper_text.strip():
             yield _event("error", 100, "PDF에서 텍스트를 추출할 수 없습니다.")
             return
+        text_hash = hashlib.sha256(paper_text.encode("utf-8")).hexdigest()
 
         if await request.is_disconnected():
             return
@@ -169,13 +172,19 @@ async def run_pipeline(tmp_path: str, vault_path: str, request: Request):
             return
         summary, api_cost_usd = result
 
-        title_slug = slugify(summary["title"])
+        # overwrite_slug가 있으면(같은 논문을 재처리하는 경우) 새 제목으로 slug를 다시
+        # 뽑지 않고 기존 slug를 그대로 재사용한다 - 같은 논문이어도 Claude가 매번 제목을
+        # 조금씩 다르게 내서(대소문자, 부제 표기 등) slugify 결과가 매번 달라지면 매번
+        # 새 폴더가 생겨버린다.
+        title_slug = overwrite_slug or slugify(summary["title"])
 
         if await request.is_disconnected():
             return
 
         yield _event("nodes", 65, "concept/entity 노드 파일 갱신 중...")
         try:
+            if overwrite_slug:
+                remove_source(NODE_STORE_ROOT, overwrite_slug)
             for c in summary.get("concepts", []):
                 resolve_or_create_node(
                     NODE_STORE_ROOT, "concept", c["label"], c.get("aliases", []),
@@ -219,6 +228,7 @@ async def run_pipeline(tmp_path: str, vault_path: str, request: Request):
             "supabase_error": supabase_error,
             "title_slug": title_slug,
             "node_summary": node_summary,
+            "text_hash": text_hash,
         }
 
         summary_json_path = write_summary_json(vault_path, title_slug, result)
@@ -235,7 +245,7 @@ async def run_pipeline(tmp_path: str, vault_path: str, request: Request):
 
 
 @app.post("/api/process")
-async def process_paper(request: Request, file: UploadFile = File(...)):
+async def process_paper(request: Request, file: UploadFile = File(...), overwrite_slug: str | None = Form(None)):
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="PDF 파일만 지원합니다.")
 
@@ -245,7 +255,54 @@ async def process_paper(request: Request, file: UploadFile = File(...)):
         tmp.write(await file.read())
         tmp_path = tmp.name
 
-    return StreamingResponse(run_pipeline(tmp_path, vault_path, request), media_type="application/x-ndjson")
+    return StreamingResponse(
+        run_pipeline(tmp_path, vault_path, request, overwrite_slug), media_type="application/x-ndjson"
+    )
+
+
+def _find_paper_by_hash(vault_path: str, text_hash: str) -> dict | None:
+    """vault의 논문 폴더들을 훑어 같은 text_hash를 가진 .summary.json이 있는지 찾는다.
+    text_hash 필드가 없는(이 필드 도입 전에 처리된) 옛 논문은 비교 대상에서 자연히
+    빠진다 - 별도 백필 없이도 하위 호환됨."""
+    autonote_dir = Path(vault_path) / "AutoNote"
+    if not autonote_dir.is_dir():
+        return None
+    for folder in autonote_dir.iterdir():
+        if not folder.is_dir():
+            continue
+        summary_path = folder / f"{folder.name}.summary.json"
+        if not summary_path.is_file():
+            continue
+        try:
+            data = json.loads(summary_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if data.get("text_hash") == text_hash:
+            return {"slug": folder.name, "title": data.get("title", folder.name)}
+    return None
+
+
+@app.post("/api/check-duplicate")
+async def check_duplicate(file: UploadFile = File(...)):
+    """업로드된 PDF가 이미 처리된 논문과 같은지, Claude를 부르기 전에 무료로 먼저
+    확인한다. 제목 문자열은 처리할 때마다 Claude가 다르게 낼 수 있어(대소문자, 부제
+    표기 등) 신뢰할 수 없으므로, 추출된 원문 텍스트의 해시로 비교한다."""
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="PDF 파일만 지원합니다.")
+
+    vault_path = get_vault_path()
+
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(await file.read())
+        tmp_path = tmp.name
+    try:
+        paper_text = extract_text(tmp_path)
+    finally:
+        os.unlink(tmp_path)
+
+    text_hash = hashlib.sha256(paper_text.encode("utf-8")).hexdigest()
+    match = _find_paper_by_hash(vault_path, text_hash)
+    return {"duplicate": match is not None, **(match or {})}
 
 
 @app.get("/api/graph")
@@ -389,6 +446,11 @@ async def delete_paper(slug: str):
         delete_remote_note(slug)
     except Exception as exc:  # noqa: BLE001 - 한쪽 삭제 실패가 다른 쪽을 막지 않음
         remote_error = str(exc)
+
+    try:
+        remove_source(NODE_STORE_ROOT, slug)
+    except Exception as exc:  # noqa: BLE001 - node_store 정리 실패가 나머지 삭제를 막지 않음
+        print(f"  [경고] node_store 참조 정리 실패: {exc}")
 
     return {"slug": slug, "local_error": local_error, "remote_error": remote_error}
 

@@ -461,6 +461,35 @@ def resolve_or_create_node(
     return primary["slug"]
 
 
+def remove_source(store_root: str, source_slug: str) -> None:
+    """source_slug(논문 slug)를 모든 concept/entity 노드 파일의 sources[]에서 제거한다.
+
+    두 곳에서 쓰인다: (1) 논문 삭제 시 - vault/Supabase에서 노트를 지워도 지금까진
+    node_store 참조가 죽은 채로 영구히 남았다. (2) 같은 논문을 다시 처리해 덮어쓸 때 -
+    옛 처리 결과의 참조를 먼저 걷어내야, 이번엔 안 나온 concept/entity가 옛 흔적으로
+    계속 남지 않는다.
+
+    제거 후 sources가 비면(다른 논문도 이 노드를 참조하지 않으면) 파일 자체를 삭제한다 -
+    아무 논문도 안 쓰는 개념/용어를 굳이 남겨둘 이유가 없다. sources가 남아있으면
+    _write_node_file()로 다시 써서 "## 등장 논문" 자동 섹션도 같이 갱신하고, 사용자가
+    남긴 개인 메모(user_section)는 그대로 보존한다."""
+    for node_type, dir_name in _DIR_BY_TYPE.items():
+        folder = Path(store_root) / dir_name
+        if not folder.is_dir():
+            continue
+        for path in sorted(folder.glob("*.md")):
+            frontmatter = _read_frontmatter(path)
+            sources = frontmatter.get("sources") or []
+            if not any(s.get("slug") == source_slug for s in sources):
+                continue
+            frontmatter["sources"] = [s for s in sources if s.get("slug") != source_slug]
+            if frontmatter["sources"]:
+                user_section = _extract_user_section(path)
+                _write_node_file(path, frontmatter, user_section)
+            else:
+                path.unlink()
+
+
 def _create_node(
     store_root: str,
     node_type: str,
