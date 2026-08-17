@@ -76,26 +76,23 @@ def write_note(vault_path: str, summary: dict, title_slug: str, excalidraw_filen
         deep_dive = c.get("deep_dive")
         if not deep_dive:
             continue
-        marker = ""
-        if deep_dive["analogy_is_original"]:
-            marker = " (요약자 비유)"
-        elif deep_dive.get("quote_verified") is False:
-            marker = " ⚠️ (원문 인용 확인 안됨)"
+        breakdown_rows = "\n".join(
+            f'| "{_table_cell(item["clause"])}" | {_table_cell(item["explanation"])} |'
+            for item in deep_dive["insight_breakdown"]
+        )
+        breakdown_table = f"| 구절 | 풀이 |\n|---|---|\n{breakdown_rows}" if breakdown_rows else ""
         deep_dive_sections.append(
             f"### [[{c['label']}]]\n\n"
-            f"- **왜 필요했나**: {deep_dive['why_needed']}\n"
-            f"- **비유 또는 직관**: {deep_dive['analogy']}{marker}\n"
-            f"- **기존 방식과 차이**: {deep_dive['difference']}\n"
-            f"- **최소 예시**: {deep_dive['minimal_example']}\n"
-            f"- **왜 중요한가**: {deep_dive['why_important']}"
+            f"{deep_dive['setup']}\n\n"
+            f"> **핵심 통찰**: {deep_dive['core_insight']}\n\n"
+            f"{breakdown_table}\n\n"
+            f"**왜 중요한가**: {deep_dive['why_it_matters']}"
         )
     deep_dive_body = "\n\n".join(deep_dive_sections) if deep_dive_sections else "_선정된 핵심 개념 없음_"
 
     results_body = "\n\n".join(
         f"### {r['section_title']}\n{r['content_markdown']}" for r in summary.get("results", [])
     )
-
-    flow_diagram = summary.get("flow_diagram_mermaid", "").strip()
 
     content = f"""---
 {frontmatter_yaml}
@@ -128,11 +125,6 @@ def write_note(vault_path: str, summary: dict, title_slug: str, excalidraw_filen
 
 ## ⚠️ 한계
 {summary['limitations']}
-
-## 🧭 전체 흐름 지도
-```mermaid
-{flow_diagram}
-```
 """
 
     note_path.write_text(content, encoding="utf-8")

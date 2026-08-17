@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
-import unicodedata
 
 import anthropic
 
@@ -54,57 +52,64 @@ SYSTEM_PROMPT = (
     "반드시 지킬 원칙:\n"
     "1. 주어지는 논문 원문 전체를 근거로 판단하십시오. 초록·서론·결론 같은 일부 섹션만 "
     "보고 성급히 결론짓지 말고, 본문 전체를 스캔해 핵심 개념·주장·근거를 찾으십시오.\n"
-    "2. 모든 주장·수치·인용은 원문에 실제로 있는 내용이어야 합니다. 추측하거나 지어내지 "
-    "마십시오. 원문에 없는 내용을 보충 설명(비유 등)할 때는 반드시 그렇다고 표시하십시오 "
-    "(각 필드의 설명을 따르십시오).\n"
+    "2. 모든 주장·수치는 원문에 실제로 있는 내용이어야 합니다. 추측하거나 지어내지 "
+    "마십시오. 비유나 풀어쓴 설명은 원문에 없는 표현이어도 괜찮지만, 그 설명이 가리키는 "
+    "사실관계(무엇이 무엇과 동치인지, 어떤 수치인지 등) 자체는 원문과 일치해야 합니다.\n"
     "3. 결과는 표·불릿 위주로 스캔하기 쉽게 작성하십시오. 긴 줄글 문단은 피하십시오.\n"
     "4. 한국어로 작성하되 고유명사(모델명·기법명·저자명)는 원문 그대로 영문을 유지하십시오."
 )
 
+# 문제-해결 서사(긴장 조성 -> 반전) + 압축 문장의 절 단위 분해를 결합한 구조.
+# 서사가 "왜 궁금해야 하는지"를 만들고, 압축 문장(core_insight)이 "정답이 뭔지" 짚고,
+# 절 단위 분해가 그 정답의 각 부분이 흐릿하게 안 넘어가게 잡아준다. 원문 인용
+# 검증(analogy_is_original/source_quote)은 출력 토큰을 아끼려고 뺐다 - 절 단위
+# 설명은 짧고 구체적이라 애초에 원문을 통째로 베낄 필요가 적다.
 _DEEP_DIVE_SCHEMA = {
     "type": "object",
     "properties": {
-        "why_needed": {
-            "type": "string",
-            "description": "이게 없으면 어떤 문제가 있었는지, 동기부터 시작해서 설명.",
-        },
-        "analogy": {
+        "setup": {
             "type": "string",
             "description": (
-                "비유 또는 직관적 설명. 이 필드에 실제로 화면에 보여줄 문장을 직접 쓸 것 - "
-                "다른 필드에 인용문을 넣어두고 여기를 비워두지 말 것. 논문 본문에 저자가 이미 "
-                "쉽게 풀어쓴 문장(예: 'Intuitively, we interpret...', 'This can be interpreted "
-                "as...')이 있으면 그 문장을 원문 그대로(한 글자도 바꾸지 말고) 그대로 복사해서 "
-                "여기 쓸 것(1순위, 이 경우 analogy_is_original=false). 그런 문장이 논문에 없을 "
-                "때만 직접 비유를 새로 만들어 쓸 것(2순위, 이 경우 analogy_is_original=true). "
-                "두 경우 모두 이 필드는 절대 빈 문자열이면 안 됨."
+                "문제-해결 서사의 도입부. 이 개념이 나오기 전 어떤 긴장/대립이 있었는지 "
+                "(예: 두 갈래 길, 상충하는 두 접근법) 2~4문장으로 이야기처럼. 전문용어 최소화."
             ),
         },
-        "analogy_is_original": {
-            "type": "boolean",
+        "core_insight": {
+            "type": "string",
             "description": (
-                "true = 위 analogy를 요약자(모델)가 새로 만듦. false = analogy에 논문 본문의 "
-                "문장을 원문 그대로 옮겨 적었음(요약/의역이 아니라 정확한 인용이어야 검증이 "
-                "통과됨)."
+                "이 개념의 핵심을 압축한 단 하나의 문장 - 서사의 '반전/발견' 지점. 반드시 1문장. "
+                "insight_breakdown에서 각각 풀릴 핵심 어구를 최대 3개로 구성할 것(어구가 4개 "
+                "이상 필요하면 문장을 더 압축해서 3개로 줄일 것)."
             ),
         },
-        "difference": {
-            "type": "string",
-            "description": "\"A가 아니라 B\"식으로 기존 방식과 대조해 설명. 가능하면 원문 표현 인용 포함.",
+        "insight_breakdown": {
+            "type": "array",
+            "description": (
+                "core_insight을 절 단위로 쪼개 각각 쉬운 말로 풀이. 반드시 3개 이하로만 - "
+                "core_insight 자체를 절 3개로 구성했으니 이 배열도 항목이 3개를 넘으면 안 됨."
+            ),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "clause": {"type": "string", "description": "core_insight에서 그대로 가져온 구절."},
+                    "explanation": {
+                        "type": "string",
+                        "description": (
+                            "그 구절의 의미를 그 구절 안의 전문용어를 재사용하지 않고 1~2문장으로. "
+                            "필요하면 아주 작은 숫자 예시를 포함해도 됨."
+                        ),
+                    },
+                },
+                "required": ["clause", "explanation"],
+                "additionalProperties": False,
+            },
         },
-        "minimal_example": {
+        "why_it_matters": {
             "type": "string",
-            "description": "수식 전체를 유도하지 말고, 숫자 하나를 넣어보는 정도의 최소 예시.",
-        },
-        "why_important": {
-            "type": "string",
-            "description": "이 개념을 모르면 논문의 어떤 핵심 주장/뒷부분을 이해할 수 없는지 연결해서 설명.",
+            "description": "이걸 모르면 논문의 어떤 핵심 주장/뒷 섹션을 이해할 수 없는지. 1~2문장.",
         },
     },
-    "required": [
-        "why_needed", "analogy", "analogy_is_original",
-        "difference", "minimal_example", "why_important",
-    ],
+    "required": ["setup", "core_insight", "insight_breakdown", "why_it_matters"],
     "additionalProperties": False,
 }
 
@@ -300,56 +305,14 @@ SCHEMA = {
                 "추측성 한계를 지어내지 말 것."
             ),
         },
-        "flow_diagram_mermaid": {
-            "type": "string",
-            "description": (
-                "논문의 전체 파이프라인/논리 흐름(문제→방법→검증→결과 순서, 인프라/부가요소는 "
-                "점선으로 연결)을 Mermaid flowchart 문법의 본문만 작성 (```mermaid 코드펜스는 "
-                "붙이지 말 것). 예: 'flowchart TB\\n    A[\"문제\"] --> B[\"방법\"]'."
-            ),
-        },
     },
     "required": [
         "title", "authors", "tags", "source_meta", "tldr", "problem_motivation",
         "claims", "concepts", "entities", "relationships", "results",
-        "limitations", "flow_diagram_mermaid",
+        "limitations",
     ],
     "additionalProperties": False,
 }
-
-_WHITESPACE_RE = re.compile(r"\s+")
-# 편집기에서 자동교정되는 스마트 따옴표를 ASCII로 통일 - 모델이 인용문을 옮겨 적을 때
-# ASCII 따옴표로 정규화해서 쓰는 경우가 많아, 안 하면 원문 그대로인 인용도 불일치로
-# 잘못 판정된다.
-_SMART_QUOTES = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"'})
-
-
-def _normalize_for_match(text: str) -> str:
-    """대소문자를 접고, NFKC로 유니코드 형태를 통일하고, 공백을 전부 제거해 비교한다.
-
-    PDF의 수식 변수는 일반 알파벳이 아니라 수학 기울임체 유니코드(예: 'L'이 아니라
-    U+1D43F)로 추출되는 경우가 많아 NFKC 정규화가 필요하다(dedup.py의
-    normalize_label()과 같은 이유). 또한 PDF 텍스트 레이어는 수식 변수 뒤에 실제
-    공백 문자가 아예 없는 경우가 흔해서("for 𝐿to be"), 공백을 하나로 뭉개는 정도로는
-    부족하다 - 공백을 아예 다 제거하고 비교해야 원문 그대로의 인용이 안정적으로
-    매칭된다."""
-    text = unicodedata.normalize("NFKC", text).translate(_SMART_QUOTES)
-    return _WHITESPACE_RE.sub("", text).casefold()
-
-
-def _verify_quotes(summary: dict, paper_text: str) -> None:
-    """concept의 deep_dive.analogy가 논문 원문 인용이라고 주장할 때(analogy_is_original=False)
-    실제로 원문에 있는지 문자열매칭만으로 확인한다 - LLM을 다시 부르지 않는다. 실패해도
-    파이프라인을 막지 않고 quote_verified 플래그만 남겨 obsidian_writer가 경고 마커를 붙이게
-    한다. PDF에서 추출한 텍스트는 원본 레이아웃의 줄바꿈을 그대로 따라가 인용문과 줄바꿈 위치가
-    다를 수 있으므로, 공백을 모두 하나로 정규화한 뒤 부분일치로 확인한다."""
-    normalized_paper = _normalize_for_match(paper_text)
-    for concept in summary.get("concepts", []):
-        deep_dive = concept.get("deep_dive")
-        if not deep_dive or deep_dive["analogy_is_original"] or not deep_dive.get("analogy"):
-            continue
-        deep_dive["quote_verified"] = _normalize_for_match(deep_dive["analogy"]) in normalized_paper
-
 
 async def summarize_paper(paper_text: str) -> tuple[dict, float]:
     """논문 전문을 한 번에 Claude에 넣어 구조화된 서사형 요약을 만들고, (요약 결과, API
@@ -394,7 +357,5 @@ async def summarize_paper(paper_text: str) -> tuple[dict, float]:
     text = next(b.text for b in response.content if b.type == "text")
     summary = json.loads(text)
     cost_usd = _calculate_cost_usd(response.usage, response.model)
-
-    _verify_quotes(summary, paper_text)
 
     return summary, cost_usd
