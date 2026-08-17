@@ -90,10 +90,6 @@ def write_note(vault_path: str, summary: dict, title_slug: str, excalidraw_filen
         )
     deep_dive_body = "\n\n".join(deep_dive_sections) if deep_dive_sections else "_선정된 핵심 개념 없음_"
 
-    results_body = "\n\n".join(
-        f"### {r['section_title']}\n{r['content_markdown']}" for r in summary.get("results", [])
-    )
-
     content = f"""---
 {frontmatter_yaml}
 ---
@@ -120,10 +116,7 @@ def write_note(vault_path: str, summary: dict, title_slug: str, excalidraw_filen
 ## 🔬 핵심 개념 풀어보기
 {deep_dive_body}
 
-## 📊 평가 결과
-{results_body}
-
-## ⚠️ 한계
+## ⚠️ 한계 & 향후 과제
 {summary['limitations']}
 """
 

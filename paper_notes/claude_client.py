@@ -276,39 +276,20 @@ SCHEMA = {
                 "additionalProperties": False,
             },
         },
-        "results": {
-            "type": "array",
-            "description": (
-                "평가/실험 결과를 논문의 실제 섹션 구성에 맞춰 여러 하위 섹션으로 나눠 "
-                "기술할 것(예: 벤치마크 카테고리별 표, 사례 연구, 비용 효율 등 - 논문마다 "
-                "구성이 다를 수 있으니 억지로 통일하지 말 것). 각 항목은 소제목 + 마크다운 "
-                "본문(표나 불릿, 자유형식)."
-            ),
-            "items": {
-                "type": "object",
-                "properties": {
-                    "section_title": {"type": "string"},
-                    "content_markdown": {
-                        "type": "string",
-                        "description": "마크다운 표나 불릿으로 작성. 원문에 있는 수치만 사용.",
-                    },
-                },
-                "required": ["section_title", "content_markdown"],
-                "additionalProperties": False,
-            },
-        },
         "limitations": {
             "type": "string",
             "description": (
-                "논문이 스스로 인정했거나 데이터로 드러낸 한계만. 별도 Limitations 절이 "
-                "없으면 '명시적 절 없음, 아래는 각 섹션에 흩어진 내용을 종합'이라고 밝힐 것. "
-                "추측성 한계를 지어내지 말 것."
+                "논문이 스스로 인정한 한계뿐 아니라, Future Work/향후 과제로 명시한 내용도 "
+                "포함할 것 - 저자들이 스스로 '아직 못 풀었다', '향후 연구가 필요하다'고 "
+                "밝힌 것들. 별도 Limitations/Future Work 절이 없으면 각 섹션에 흩어진 "
+                "내용을 종합해도 됨. 마크다운 표나 불릿으로 작성. 원문에 있는 내용만 "
+                "가지고 작성(추측성 한계를 지어내지 말 것). 5줄 이하로."
             ),
         },
     },
     "required": [
         "title", "authors", "tags", "source_meta", "tldr", "problem_motivation",
-        "claims", "concepts", "entities", "relationships", "results",
+        "claims", "concepts", "entities", "relationships",
         "limitations",
     ],
     "additionalProperties": False,
