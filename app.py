@@ -189,11 +189,13 @@ async def run_pipeline(tmp_path: str, vault_path: str, request: Request, overwri
                 resolve_or_create_node(
                     NODE_STORE_ROOT, "concept", c["label"], c.get("aliases", []),
                     title_slug, summary["title"], category=c.get("category"),
+                    description=c.get("description", ""), note=c.get("note", ""),
                 )
             for e in summary.get("entities", []):
                 resolve_or_create_node(
                     NODE_STORE_ROOT, "entity", e["label"], e.get("aliases", []),
                     title_slug, summary["title"],
+                    description=e.get("description", ""), note=e.get("note", ""),
                 )
         except Exception as exc:  # noqa: BLE001 - 노드 파일 갱신 실패가 파이프라인 전체를 막지 않음
             print(f"  [경고] concept/entity 노드 파일 갱신 실패: {exc}")

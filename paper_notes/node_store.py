@@ -292,7 +292,17 @@ def find_node_slug_fuzzy(
 def _write_node_file(path: Path, frontmatter: dict, user_section: str) -> None:
     frontmatter_yaml = yaml.safe_dump(frontmatter, allow_unicode=True, sort_keys=False).strip()
 
-    auto_lines = ["## 등장 논문"]
+    # description/note는 논문 노트의 레퍼런스 표에 있던 설명을 그대로 복사해온 것 -
+    # 최초 생성 시에만 채워지므로 없을 수도 있다(그 이전에 만들어진 노드, 혹은 값을
+    # 안 넘긴 호출부).
+    auto_lines = []
+    if frontmatter.get("description"):
+        auto_lines.append(frontmatter["description"])
+    if frontmatter.get("note"):
+        auto_lines.append(f"*{frontmatter['note']}*")
+    if auto_lines:
+        auto_lines.append("")
+    auto_lines.append("## 등장 논문")
     for src in frontmatter["sources"]:
         auto_lines.append(f"- [[{src['slug']}|{src['title']}]]")
     auto_section = "\n".join(auto_lines)
@@ -436,6 +446,8 @@ def resolve_or_create_node(
     source_slug: str,
     source_title: str,
     category: str | None = None,
+    description: str = "",
+    note: str = "",
 ) -> str:
     """label/aliases에 해당하는 concept/entity 노드 파일을 찾아 갱신하거나 새로
     만들고, 최종 slug를 반환한다.
@@ -444,12 +456,19 @@ def resolve_or_create_node(
     혹은 MinHash 퍼지 매칭으로 두 노드가 동시에 걸리는 경우) 파일을 바로 합치지
     않는다 - 가장 먼저 생성된 노드를 대표(primary)로 삼아 갱신하고, 나머지는
     _merge_candidates.json에 병합 후보로만 기록한다.
+
+    description/note는 논문 요약 파이프라인이 이미 만들어둔 텍스트(레퍼런스 표용
+    설명/비고)를 그대로 복사해오는 것이라 별도 API 호출이 필요 없다. display_label과
+    같은 이유로 최초 생성 시에만 채워지고 이후 갱신에서는 바뀌지 않는다(어느 논문의
+    설명이 "더 낫다"를 판단할 기준이 없음).
     """
     existing = _existing_nodes(store_root, node_type)
     matches = [n for n in existing if _matches_node(label, aliases, n)]
 
     if not matches:
-        return _create_node(store_root, node_type, label, aliases, source_slug, source_title, category)
+        return _create_node(
+            store_root, node_type, label, aliases, source_slug, source_title, category, description, note
+        )
 
     matches.sort(key=lambda n: n.get("created_at", ""))
     primary = matches[0]
@@ -498,6 +517,8 @@ def _create_node(
     source_slug: str,
     source_title: str,
     category: str | None,
+    description: str = "",
+    note: str = "",
 ) -> str:
     slug = _slugify(label)
     path = _node_dir(store_root, node_type) / f"{slug}.md"
@@ -506,6 +527,8 @@ def _create_node(
         "type": node_type,
         "display_label": label,
         "aliases": aliases,
+        "description": description,
+        "note": note,
         "sources": [{"slug": source_slug, "title": source_title}],
         "created_at": _now_iso(),
     }
