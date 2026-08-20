@@ -3,9 +3,10 @@
 :root {
   --tag-green: #4C9A6A;
   --entity-blue: #4C7FA6;
+  --attachment-yellow: #B8960C;
 }
 @media (prefers-color-scheme: dark) {
-  :root { --tag-green: #6FBE8F; --entity-blue: #7FAFDE; }
+  :root { --tag-green: #6FBE8F; --entity-blue: #7FAFDE; --attachment-yellow: #E0C341; }
 }
 
 .layout {
@@ -64,11 +65,12 @@ body.graph-expanded #graphSummary {
   display: none;
 }
 
-.node-note, .node-tag, .node-concept, .node-entity { transition: opacity .15s ease; }
+.node-note, .node-tag, .node-concept, .node-entity, .node-attachment { transition: opacity .15s ease; }
 .node-note { fill: var(--accent); stroke: var(--surface); stroke-width: 1.5px; cursor: grab; }
 .node-tag { fill: var(--tag-green); stroke: var(--surface); stroke-width: 1px; cursor: grab; }
 .node-concept { fill: var(--entity-blue); stroke: var(--surface); stroke-width: 1px; cursor: grab; }
 .node-entity { fill: var(--text-muted); stroke: var(--surface); stroke-width: 1px; cursor: grab; }
+.node-attachment { fill: var(--attachment-yellow); stroke: var(--surface); stroke-width: 1px; cursor: grab; }
 .graph-label { fill: var(--text-muted); font-size: 10px; pointer-events: none; user-select: none; }
 .graph-link { stroke: var(--border); stroke-opacity: .7; transition: opacity .15s ease, stroke .15s ease, stroke-opacity .15s ease; }
 

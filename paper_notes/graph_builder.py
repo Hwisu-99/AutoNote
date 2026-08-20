@@ -6,10 +6,12 @@ from pathlib import Path
 import yaml
 
 from paper_notes.dedup import dedupe_labels
-from paper_notes.node_store import NODE_STORE_ROOT, find_node_fuzzy, list_nodes, node_index
+from paper_notes.node_store import IMAGE_EXTENSIONS, NODE_STORE_ROOT, find_node_fuzzy, list_nodes, node_index
 
 # Obsidian wikilink syntax: [[target]], [[target|alias]], embeds !\[\[target]]
 _WIKILINK_RE = re.compile(r"!?\[\[([^\]|#]+)(?:\|[^\]]+)?\]\]")
+# concept/entity 노드 편집 UI가 첨부 이미지를 넣을 때 쓰는 마크다운 이미지 문법: ![alt](경로)
+_MD_IMAGE_RE = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
 _FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)
 
 
@@ -104,11 +106,19 @@ def build_graph(vault_path: str, focus_slug: str | None = None, only_focus: bool
         ]
 
         links: set[str] = set()
+        attachments: set[str] = set()
         for wikilink in _WIKILINK_RE.finditer(body):
             target = wikilink.group(1).strip()
             if target.lower().endswith(".excalidraw"):
                 continue  # 개념도 임베드는 다른 논문 노트가 아니므로 그래프 에지에서 제외
+            if Path(target).suffix.lower() in IMAGE_EXTENSIONS:
+                # Obsidian에서 사용자가 노트에 직접 붙여넣은 이미지(![[Pasted image ...]])는
+                # concept 후보가 아니라 첨부파일이므로 별도로 모아 attachment 노드로 만든다.
+                attachments.add(target)
+                continue
             links.add(target)
+        for md_image in _MD_IMAGE_RE.finditer(body):
+            attachments.add(md_image.group(1).strip())
 
         notes.append(
             {
@@ -116,6 +126,7 @@ def build_graph(vault_path: str, focus_slug: str | None = None, only_focus: bool
                 "title": title,
                 "tags": tags,
                 "links": links,
+                "attachments": attachments,
                 "concepts": fm_concepts,
                 "entities": fm_entities,
             }
@@ -127,6 +138,28 @@ def build_graph(vault_path: str, focus_slug: str | None = None, only_focus: bool
     seen_tag_nodes: set[str] = set()
     seen_concept_nodes: set[str] = set()
     seen_entity_nodes: set[str] = set()
+    seen_attachment_nodes: set[str] = set()
+
+    def _add_attachment(parent_id: str, owner_type: str, owner_slug: str, src: str) -> None:
+        # owner_type/owner_slug/src는 클릭 시 실제 이미지를 열기 위한 정보다: concept/entity
+        # 첨부는 src가 이미 /attachments 마운트 기준 상대경로라 그대로 쓸 수 있지만, note에
+        # Obsidian이 붙여넣은 첨부(![[파일명]])는 vault 어디에 실제로 있는지 여기선 알 수
+        # 없어 프런트가 note_slug/filename으로 /api/vault-attachment에 물어봐야 한다.
+        label = Path(src).name or src
+        attachment_id = f"attachment:{parent_id}:{label}"
+        if attachment_id not in seen_attachment_nodes:
+            nodes.append(
+                {
+                    "id": attachment_id,
+                    "label": label,
+                    "type": "attachment",
+                    "owner_type": owner_type,
+                    "owner_slug": owner_slug,
+                    "src": src,
+                }
+            )
+            seen_attachment_nodes.add(attachment_id)
+        edges.append({"source": parent_id, "target": attachment_id, "type": "link"})
 
     # 그래프가 커질수록 같은 개념이 논문마다 다른 표기("Self-Attention" vs
     # "self attention mechanism")로 등장해 별개 노드로 쪼개지기 쉽다. 노드/에지를
@@ -221,6 +254,24 @@ def build_graph(vault_path: str, focus_slug: str | None = None, only_focus: bool
                 seen_tag_nodes.add(tag_id)
             edges.append({"source": n["slug"], "target": tag_id, "type": "tag"})
 
+        for src in n["attachments"]:
+            _add_attachment(n["slug"], "note", n["slug"], src)
+
+    # concept/entity 노드도 (node_store.py의 편집 UI로) 이미지를 첨부할 수 있다.
+    # 이번 그래프에 실제로 등장하는(=최소 한 논문이 참조하는) concept/entity만
+    # 대상으로, 그 물리 노드 파일 본문에서 첨부 이미지를 찾아 연결한다.
+    for store_nodes, seen_ids, prefix in (
+        (concept_nodes_store, seen_concept_nodes, "concept"),
+        (entity_nodes_store, seen_entity_nodes, "entity"),
+    ):
+        for store_node in store_nodes:
+            node_id = f"{prefix}:{store_node['display_label']}"
+            if node_id not in seen_ids:
+                continue
+            text = store_node["path"].read_text(encoding="utf-8")
+            for md_image in _MD_IMAGE_RE.finditer(text):
+                _add_attachment(node_id, prefix, store_node["slug"], md_image.group(1).strip())
+
     if only_focus and focus_slug:
         keep_ids = {focus_slug}
         for e in edges:
@@ -235,6 +286,13 @@ def build_graph(vault_path: str, focus_slug: str | None = None, only_focus: bool
         concept_ids_in_focus = {nid for nid in keep_ids if nid.startswith("concept:")}
         for e in edges:
             if e["source"] in concept_ids_in_focus and e["target"].startswith("entity:"):
+                keep_ids.add(e["target"])
+
+        # concept/entity에 달린 첨부 이미지는 그 concept/entity가 이미 keep_ids에 있을
+        # 때만(위 확장까지 끝난 뒤) 같이 딸려온다 - note에 직접 붙은 첨부는 focus_slug
+        # 자체가 source라 첫 루프에서 이미 포함된다.
+        for e in edges:
+            if e["source"] in keep_ids and e["target"].startswith("attachment:"):
                 keep_ids.add(e["target"])
 
         nodes = [n for n in nodes if n["id"] in keep_ids]

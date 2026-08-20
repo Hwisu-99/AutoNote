@@ -224,7 +224,28 @@ function handleNodeClick(d) {
   }
   if ((d.type === 'concept' || d.type === 'entity') && d.node_slug) {
     openNodeView(d.type, d.node_slug, d.label);
+    return;
   }
+  if (d.type === 'attachment') {
+    openAttachment(d);
+  }
+}
+
+// 첨부 이미지 노드는 별도 md 파일이 없으므로 openNodeView 대신 이미지 하나만
+// node-mode 패널에 띄운다. concept/entity 첨부는 node_store.py가 만든 경로라
+// /attachments로 바로 서빙되지만(attachmentUrl), note에 Obsidian이 붙여넣은
+// 첨부는 vault 어디 있는지 여기서 알 수 없어 서버가 대신 찾아 서빙하는
+// /api/vault-attachment를 거친다.
+function openAttachment(d) {
+  const url = d.owner_type === 'note'
+    ? `/api/vault-attachment?note_slug=${encodeURIComponent(d.owner_slug)}&filename=${encodeURIComponent(d.src)}`
+    : attachmentUrl(d.src);
+
+  document.getElementById('nodeModeBody').innerHTML = `
+    <div class="node-view-title">${escapeHtml(d.label)}</div>
+    <div class="node-view-body"><img class="md-img" src="${url}" alt="${escapeHtml(d.label)}"></div>
+  `;
+  document.body.classList.add('node-mode');
 }
 
 function escapeHtml(text) {

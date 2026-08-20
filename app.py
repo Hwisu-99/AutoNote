@@ -12,7 +12,7 @@ from pathlib import Path
 import yaml
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -21,6 +21,7 @@ from paper_notes.excalidraw_writer import write_diagram
 from paper_notes.extractor import extract_text
 from paper_notes.graph_builder import build_graph
 from paper_notes.node_store import (
+    IMAGE_EXTENSIONS,
     NODE_STORE_ROOT,
     find_node_fuzzy,
     get_user_section,
@@ -431,6 +432,30 @@ async def get_paper_summary(slug: str):
     if not summary_path.is_file():
         raise HTTPException(status_code=404, detail="요약 정보를 찾을 수 없습니다.")
     return json.loads(summary_path.read_text(encoding="utf-8"))
+
+
+@app.get("/api/vault-attachment")
+async def get_vault_attachment(note_slug: str, filename: str):
+    """Obsidian에서 논문 노트에 직접 붙여넣은 첨부 이미지(본문의 ![[파일명]])를
+    서빙한다. node_store 첨부(/attachments)와 달리 이 파일은 vault 안 어디에
+    있는지 미리 알 수 없다(Obsidian 첨부 폴더 설정에 따라 노트와 같은 폴더일 수도,
+    다른 고정 폴더일 수도 있음) - 노트 폴더를 먼저 보고, 없으면 vault 전체를
+    파일명으로 훑는다(클릭 시 1회성 조회라 그래프 렌더링 경로에는 영향 없음)."""
+    filename = Path(filename).name
+    note_slug = Path(note_slug).name
+    if Path(filename).suffix.lower() not in IMAGE_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="지원하지 않는 파일 형식입니다.")
+
+    vault_path = get_vault_path()
+    co_located = Path(vault_path) / "AutoNote" / note_slug / filename
+    if co_located.is_file():
+        return FileResponse(co_located)
+
+    for root, _dirs, files in os.walk(vault_path):
+        if filename in files:
+            return FileResponse(Path(root) / filename)
+
+    raise HTTPException(status_code=404, detail="첨부 이미지를 찾을 수 없습니다.")
 
 
 @app.delete("/api/papers/{slug}")

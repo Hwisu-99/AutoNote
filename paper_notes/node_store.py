@@ -50,7 +50,9 @@ from paper_notes.dedup import labels_match, normalize_label
 _FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)
 _DIR_BY_TYPE = {"concept": "_concepts", "entity": "_entities"}
 _ATTACHMENTS_DIR_BY_TYPE = {"concept": "concepts", "entity": "entities"}
-_ALLOWED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+# graph_builder.py도 첨부 이미지를 노드 md 본문에서 찾아 그래프의 attachment
+# 노드로 만들 때 같은 확장자 목록을 써야 하므로 공개 상수로 둔다.
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 
 # 노드 파일이 실제로 저장되는 기본 위치: 이 프로젝트 폴더(paper_notes/의 부모).
 # resolve_or_create_node 등은 store_root를 인자로 받으므로(테스트에서는 임시
@@ -177,7 +179,7 @@ def save_attachment(store_root: str, node_type: str, slug: str, filename: str, c
         raise ValueError(f"'{slug}'는 다른 노드로 병합되어 더 이상 독립된 노드가 아닙니다.")
 
     ext = Path(filename).suffix.lower()
-    if ext not in _ALLOWED_IMAGE_EXTENSIONS:
+    if ext not in IMAGE_EXTENSIONS:
         raise ValueError(f"지원하지 않는 이미지 형식입니다: {ext or '(확장자 없음)'}")
 
     type_dir = _ATTACHMENTS_DIR_BY_TYPE[node_type]
