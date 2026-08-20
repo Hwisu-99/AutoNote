@@ -15,6 +15,30 @@ let currentGraphData = null;
 let hideTagNodes = !toggleTagsInput.checked;
 
 btnFullGraph.addEventListener('click', () => loadGraph(null, false));
+
+// 진입점 2: 그래프 화면 독립 버튼 - 타입/carrier 논문/concept 연결 전부 사용자가 고른다.
+document.getElementById('btnAddNode').addEventListener('click', async () => {
+  const container = document.getElementById('createNodeStandaloneContainer');
+  if (container.innerHTML.trim()) { container.innerHTML = ''; return; } // 토글: 다시 누르면 닫힘
+
+  let papers = [];
+  try {
+    const res = await fetch('/api/papers');
+    if (res.ok) papers = (await res.json()).papers || [];
+  } catch { /* 아래서 빈 목록으로 처리됨 */ }
+
+  if (!papers.length) {
+    container.innerHTML = '<p class="node-view-usernotes-empty">먼저 논문을 하나 이상 처리해야 새 노드를 연결할 수 있어요.</p>';
+    return;
+  }
+
+  openCreateNodePanel(container, {
+    carrierOptions: papers,
+    needsConcepts: true,
+    onCreated: () => loadGraph(currentFocus, currentFocus !== null),
+  });
+});
+
 toggleTagsInput.addEventListener('change', () => {
   hideTagNodes = !toggleTagsInput.checked;
   if (currentGraphData) renderGraph(currentGraphData);
@@ -520,6 +544,24 @@ async function openNodeView(type, slug, fallbackLabel) {
   bodyEl.innerHTML = `
     <div class="node-view-title">${escapeHtml(data.title)}</div>
     <div class="node-view-meta">${metaChips.join('')}</div>
+    ${data.type === 'note' ? `
+      <div class="node-view-side-panel">
+        <button class="graph-btn" id="btnAddNodeToNote">+ 개념/엔티티 추가</button>
+        <div id="createNodeInNoteContainer"></div>
+      </div>
+    ` : ''}
+    ${data.type === 'concept' ? `
+      <div class="node-view-side-panel">
+        <div class="node-view-create-bar">
+          <button class="graph-btn" id="btnAddEntityToConcept">+ 엔티티 추가</button>
+          <button class="graph-btn" id="btnDeleteNode">삭제</button>
+        </div>
+        <div id="createNodeInConceptContainer"></div>
+      </div>
+    ` : ''}
+    ${data.type === 'entity' ? `
+      <div class="node-view-side-panel"><button class="graph-btn" id="btnDeleteNode">삭제</button></div>
+    ` : ''}
     <div class="node-view-body">${renderMarkdown(bodyMarkdown, data.links)}</div>
     ${editable ? `
       <div class="node-view-usernotes">
@@ -530,7 +572,180 @@ async function openNodeView(type, slug, fallbackLabel) {
   `;
 
   if (editable) wireUserNotesEditing(type, slug, userMarkdown, data.links);
+
+  // concept/entity 노드는 (LLM이 뽑았든 사용자가 직접 만들었든) 삭제 가능 - 노드
+  // 파일뿐 아니라 이 노드를 참조하던 논문들의 frontmatter까지 서버가 같이 정리한다.
+  if (editable) {
+    document.getElementById('btnDeleteNode').addEventListener('click', async () => {
+      if (!confirm(`"${data.title}" 노드를 삭제할까요?\n이 노드를 참조하던 모든 논문에서도 연결이 제거됩니다. 되돌릴 수 없습니다.`)) {
+        return;
+      }
+      try {
+        const res = await fetch(`/api/nodes/${type}/${encodeURIComponent(slug)}`, { method: 'DELETE' });
+        if (!res.ok) throw new Error('delete failed');
+        document.body.classList.remove('node-mode');
+        loadGraph(currentFocus, currentFocus !== null);
+      } catch {
+        alert('삭제에 실패했습니다.');
+      }
+    });
+  }
+
+  // 진입점 1: 논문 노드 뷰에서 이 논문을 carrier로 고정하고 개념/엔티티를 바로 추가.
+  if (data.type === 'note') {
+    document.getElementById('btnAddNodeToNote').addEventListener('click', () => {
+      const container = document.getElementById('createNodeInNoteContainer');
+      if (container.innerHTML.trim()) { container.innerHTML = ''; return; } // 토글: 다시 누르면 닫힘
+      openCreateNodePanel(container, {
+        fixedCarrier: { slug: data.slug, title: data.title },
+        needsConcepts: true,
+        onCreated: () => loadGraph(currentFocus, currentFocus !== null),
+      });
+    });
+  }
+
+  // 진입점 3: concept 노드 뷰에서 entity 타입 고정 + concept 고정, carrier 논문만
+  // 이 concept의 sources(이미 이 concept을 참조하는 논문들) 중에서 고르면 됨.
+  if (data.type === 'concept') {
+    document.getElementById('btnAddEntityToConcept').addEventListener('click', () => {
+      const container = document.getElementById('createNodeInConceptContainer');
+      if (container.innerHTML.trim()) { container.innerHTML = ''; return; }
+      const sources = data.meta.sources || [];
+      if (!sources.length) {
+        container.innerHTML = '<p class="node-view-usernotes-empty">연결된 논문이 없어 엔티티를 추가할 수 없습니다.</p>';
+        return;
+      }
+      openCreateNodePanel(container, {
+        fixedType: 'entity',
+        fixedConcept: { label: data.title },
+        carrierOptions: sources,
+        onCreated: () => loadGraph(currentFocus, currentFocus !== null),
+      });
+    });
+  }
+
   renderMermaidBlocks();
+}
+
+// 사용자가 직접 concept/entity 노드를 만드는 인라인 패널(모달 아님) - 트리거
+// 버튼 바로 아래 컨테이너에 폼을 그려 넣는다. 세 진입점(논문 뷰/concept 뷰/그래프
+// 독립 버튼)이 이 함수 하나를 서로 다른 config로 재사용한다.
+//   config.fixedType       - 'concept' | 'entity' | undefined(사용자가 고름)
+//   config.fixedCarrier    - {slug, title} | undefined(사용자가 고름)
+//   config.carrierOptions  - fixedCarrier가 없을 때 고를 논문 목록 [{slug, title}]
+//   config.fixedConcept    - {label} | undefined(entity일 때 사용자가 고름)
+//   config.needsConcepts   - true면 concept 목록을 미리 fetch해 entity 연결 드롭다운에 씀
+//   config.onCreated       - 생성 성공 시 호출(그래프 새로고침 등)
+function openCreateNodePanel(container, config) {
+  let concepts = [];
+
+  const render = () => {
+    const type = config.fixedType || (document.getElementById('cnType')?.value ?? 'concept');
+    container.innerHTML = `
+      <div class="create-node-panel">
+        ${!config.fixedType ? `
+          <div class="create-node-row">
+            <label>타입</label>
+            <select id="cnType">
+              <option value="concept"${type === 'concept' ? ' selected' : ''}>개념 (concept)</option>
+              <option value="entity"${type === 'entity' ? ' selected' : ''}>엔티티 (entity)</option>
+            </select>
+          </div>
+        ` : ''}
+        <div class="create-node-row">
+          <label>이름</label>
+          <input type="text" id="cnLabel" placeholder="예: Self-Attention">
+        </div>
+        ${type === 'concept' ? `
+          <div class="create-node-row">
+            <label>카테고리</label>
+            <select id="cnCategory">
+              <option value="input">input</option>
+              <option value="process">process</option>
+              <option value="result">result</option>
+              <option value="limitation">limitation</option>
+              <option value="other">other</option>
+            </select>
+          </div>
+        ` : `
+          <div class="create-node-row">
+            <label>연결할 개념 (선택)</label>
+            ${config.fixedConcept
+              ? `<input type="text" value="${escapeHtml(config.fixedConcept.label)}" disabled>`
+              : `<select id="cnConcept">
+                  <option value="">(없음 - 논문에 직접 연결)</option>
+                  ${concepts.map((c) => `<option value="${escapeHtml(c.label)}">${escapeHtml(c.label)}</option>`).join('')}
+                </select>`
+            }
+          </div>
+        `}
+        <div class="create-node-row">
+          <label>연결할 논문</label>
+          ${config.fixedCarrier
+            ? `<input type="text" value="${escapeHtml(config.fixedCarrier.title)}" disabled>`
+            : `<select id="cnCarrier">
+                ${config.carrierOptions.map((p) => `<option value="${escapeHtml(p.slug)}">${escapeHtml(p.title)}</option>`).join('')}
+              </select>`
+          }
+        </div>
+        <div class="create-node-actions">
+          <button class="graph-btn" id="cnSubmit">생성</button>
+          <button class="graph-btn" id="cnCancel">취소</button>
+          <span class="node-view-edit-status" id="cnStatus"></span>
+        </div>
+      </div>
+    `;
+    document.getElementById('cnCancel').addEventListener('click', () => { container.innerHTML = ''; });
+    document.getElementById('cnType')?.addEventListener('change', render);
+    document.getElementById('cnSubmit').addEventListener('click', submit);
+  };
+
+  const submit = async () => {
+    const type = config.fixedType || document.getElementById('cnType').value;
+    const label = document.getElementById('cnLabel').value.trim();
+    const statusEl = document.getElementById('cnStatus');
+    if (!label) { statusEl.textContent = '이름을 입력하세요.'; return; }
+    const carrierSlug = config.fixedCarrier ? config.fixedCarrier.slug : document.getElementById('cnCarrier').value;
+    if (!carrierSlug) { statusEl.textContent = '연결할 논문을 선택하세요.'; return; }
+
+    statusEl.textContent = '생성 중...';
+    try {
+      let res;
+      if (type === 'concept') {
+        const category = document.getElementById('cnCategory').value;
+        res = await fetch(`/api/papers/${encodeURIComponent(carrierSlug)}/concepts`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ label, category }),
+        });
+      } else {
+        const concept = config.fixedConcept ? config.fixedConcept.label : (document.getElementById('cnConcept').value || null);
+        res = await fetch(`/api/papers/${encodeURIComponent(carrierSlug)}/entities`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ label, concept }),
+        });
+      }
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || '생성에 실패했습니다.');
+      }
+      container.innerHTML = '';
+      config.onCreated?.();
+    } catch (err) {
+      statusEl.textContent = err.message || '생성에 실패했습니다.';
+    }
+  };
+
+  (async () => {
+    if (config.needsConcepts && !config.fixedConcept) {
+      try {
+        const res = await fetch('/api/concepts');
+        if (res.ok) concepts = (await res.json()).concepts || [];
+      } catch { /* 못 불러오면 빈 목록으로 진행 - entity를 논문에 직접 연결하는 것까진 여전히 가능 */ }
+    }
+    render();
+  })();
 }
 
 // renderMarkdown()은 mermaid 코드펜스를 <pre class="mermaid"> 텍스트로만 만들어둔다 -

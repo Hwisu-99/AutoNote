@@ -38,6 +38,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import time
 import uuid
 from datetime import datetime, timezone
@@ -495,6 +496,45 @@ def resolve_or_create_node(
         _record_merge_candidate(store_root, node_type, primary["slug"], other["slug"], label, source_slug)
 
     return primary["slug"]
+
+
+def create_node_manual(
+    store_root: str, node_type: str, label: str, source_slug: str, source_title: str, category: str | None = None
+) -> str:
+    """사용자가 그래프 화면에서 직접 만드는 concept/entity 노드. resolve_or_create_node()와
+    달리 기존 노드와의 퍼지 매칭을 아예 거치지 않는다 - 사용자가 명시적으로 "이건 기존에
+    없던 개념/용어다"라고 판단해서 만드는 것이므로, 굳이 비슷한 기존 노드를 찾아 거기
+    병합할 필요가 없다(오히려 사용자 의도와 다르게 엉뚱한 노드에 붙을 위험).
+
+    다만 slug(label을 정규화한 것)가 기존 파일과 완전히 같으면 조용히 덮어쓰지 않고
+    막는다 - 그건 "비슷한 개념" 수준이 아니라 "같은 파일"이라, 그대로 진행하면 기존
+    파일의 frontmatter와 사용자가 이미 남긴 개인 메모까지 통째로 사라진다."""
+    slug = _slugify(label)
+    path = _node_dir(store_root, node_type) / f"{slug}.md"
+    if path.is_file():
+        raise FileExistsError(f"'{label}'과(와) 이름이 같은 노드가 이미 있습니다.")
+    return _create_node(store_root, node_type, label, [], source_slug, source_title, category)
+
+
+def delete_node(store_root: str, node_type: str, slug: str) -> dict:
+    """concept/entity 노드 파일과 그 첨부 이미지 폴더를 삭제하고, 삭제 전
+    frontmatter를 그대로 반환한다. 호출부(app.py)가 이 frontmatter의
+    display_label/aliases/sources로 - 이 노드를 참조하던 논문들의 frontmatter에서도
+    참조를 걷어내야 하므로(안 그러면 그래프에 실제 파일 없는 "죽은" 라벨만 남음) -
+    반환값이 필요하다."""
+    path = _node_dir(store_root, node_type) / f"{slug}.md"
+    if not path.is_file():
+        raise FileNotFoundError(f"노드 파일을 찾을 수 없습니다: {slug}")
+    frontmatter = _read_frontmatter(path)
+    path.unlink()
+
+    type_dir = _ATTACHMENTS_DIR_BY_TYPE.get(node_type)
+    if type_dir:
+        attachments_dir = Path(store_root) / "attachments" / type_dir / slug
+        if attachments_dir.is_dir():
+            shutil.rmtree(attachments_dir)
+
+    return frontmatter
 
 
 def remove_source(store_root: str, source_slug: str) -> None:

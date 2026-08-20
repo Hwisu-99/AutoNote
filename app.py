@@ -20,9 +20,12 @@ from paper_notes.claude_client import summarize_paper
 from paper_notes.excalidraw_writer import write_diagram
 from paper_notes.extractor import extract_text
 from paper_notes.graph_builder import build_graph
+from paper_notes.dedup import normalize_label
 from paper_notes.node_store import (
     IMAGE_EXTENSIONS,
     NODE_STORE_ROOT,
+    create_node_manual,
+    delete_node,
     find_node_fuzzy,
     get_auto_section,
     get_user_section,
@@ -33,6 +36,7 @@ from paper_notes.node_store import (
     save_attachment,
     update_user_section,
 )
+from paper_notes.obsidian_writer import add_concept_to_note, add_entity_to_note, remove_node_from_note
 from paper_notes.obsidian_writer import delete_note as delete_local_note
 from paper_notes.obsidian_writer import write_note, write_summary_json
 from paper_notes.supabase_writer import delete_note as delete_remote_note
@@ -339,6 +343,80 @@ async def get_papers():
     return {"papers": papers}
 
 
+@app.get("/api/concepts")
+async def get_concepts():
+    """concept 노드 목록을 {slug, label} 쌍으로 가볍게 반환한다. entity를 직접 만들 때
+    "어느 concept에 연결할지" 드롭다운을 채우는 용도 - 시스템 전체 concept 중에서
+    고를 수 있어야, 지금 보고 있는 논문과 다른 논문에서 만들어진 concept에도
+    entity를 이어붙일 수 있다."""
+    nodes = list_nodes(NODE_STORE_ROOT, "concept")
+    return {"concepts": [{"slug": n["slug"], "label": n["display_label"]} for n in nodes]}
+
+
+class _AddConceptPayload(BaseModel):
+    label: str
+    category: str
+
+
+@app.post("/api/papers/{slug}/concepts")
+async def add_concept(slug: str, payload: _AddConceptPayload):
+    """사용자가 그래프/논문 화면에서 직접 concept을 추가한다. LLM 추출 파이프라인과
+    달리 기존 노드와의 퍼지 매칭 없이 바로 새 노드 파일을 만들고(같은 이름이 이미
+    있으면 409), 그 논문의 frontmatter concepts 목록에도 추가해 그래프에 바로
+    나타나게 한다."""
+    label = payload.label.strip()
+    if not label:
+        raise HTTPException(status_code=400, detail="개념 이름을 입력하세요.")
+
+    vault_path = get_vault_path()
+    note_path = Path(vault_path) / "AutoNote" / slug / f"{slug}.md"
+    if not note_path.is_file():
+        raise HTTPException(status_code=404, detail="논문 노트를 찾을 수 없습니다.")
+    frontmatter, _ = _parse_frontmatter(note_path.read_text(encoding="utf-8"))
+    title = frontmatter.get("title") or slug
+
+    # create_node_manual()을 먼저 시도한다 - 이름이 겹쳐 실패하면 여기서 바로 끝나야
+    # 하고, 이미 논문 frontmatter에 concept을 추가해버린 뒤라면(반대 순서) 노드 파일
+    # 생성은 실패했는데 frontmatter만 바뀌어 있는 상태가 남는다.
+    try:
+        node_slug = create_node_manual(NODE_STORE_ROOT, "concept", label, slug, title, category=payload.category)
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    add_concept_to_note(vault_path, slug, label)
+    return {"slug": node_slug}
+
+
+class _AddEntityPayload(BaseModel):
+    label: str
+    concept: str | None = None
+
+
+@app.post("/api/papers/{slug}/entities")
+async def add_entity(slug: str, payload: _AddEntityPayload):
+    """사용자가 그래프/논문/concept 화면에서 직접 entity를 추가한다. concept을 주면
+    그래프에서 concept -> entity로 연결되고, 없으면 이 논문에 직접 연결된다(기존
+    LLM 추출 entity와 그래프 상 동일한 동작)."""
+    label = payload.label.strip()
+    if not label:
+        raise HTTPException(status_code=400, detail="엔티티 이름을 입력하세요.")
+
+    vault_path = get_vault_path()
+    note_path = Path(vault_path) / "AutoNote" / slug / f"{slug}.md"
+    if not note_path.is_file():
+        raise HTTPException(status_code=404, detail="논문 노트를 찾을 수 없습니다.")
+    frontmatter, _ = _parse_frontmatter(note_path.read_text(encoding="utf-8"))
+    title = frontmatter.get("title") or slug
+
+    try:
+        node_slug = create_node_manual(NODE_STORE_ROOT, "entity", label, slug, title)
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    add_entity_to_note(vault_path, slug, label, payload.concept)
+    return {"slug": node_slug}
+
+
 @app.get("/api/nodes/{node_type}/{slug}")
 async def get_node(node_type: str, slug: str):
     """그래프 뷰에서 노드를 클릭했을 때 보여줄 md 내용을 반환한다. note는 vault의
@@ -426,6 +504,35 @@ async def post_node_attachment(node_type: str, slug: str, file: UploadFile = Fil
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"path": path}
+
+
+@app.delete("/api/nodes/{node_type}/{slug}")
+async def delete_node_endpoint(node_type: str, slug: str):
+    """사용자가 그래프에서 직접 만들었든 LLM이 뽑았든, concept/entity 노드를
+    통째로 지운다. 노드 파일만 지우면 그 노드를 참조하던 논문들의 frontmatter에
+    실제 파일 없는 "죽은" 라벨만 남아 그래프에 클릭 안 되는 상태로 계속 나타나므로,
+    삭제된 노드의 sources에 있던 논문들도 같이 훑어 참조를 정리한다."""
+    if node_type not in ("concept", "entity"):
+        raise HTTPException(status_code=404, detail="알 수 없는 노드 타입입니다.")
+
+    try:
+        frontmatter = delete_node(NODE_STORE_ROOT, node_type, slug)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    identity_keys = {
+        normalize_label(name)
+        for name in [frontmatter.get("display_label", ""), *(frontmatter.get("aliases") or [])]
+        if name
+    }
+    vault_path = get_vault_path()
+    for source in frontmatter.get("sources") or []:
+        try:
+            remove_node_from_note(vault_path, source["slug"], identity_keys, node_type == "concept")
+        except Exception as exc:  # noqa: BLE001 - 한 논문 정리 실패가 다른 논문 정리를 막지 않음
+            print(f"  [경고] {source['slug']} frontmatter 정리 실패: {exc}")
+
+    return {"ok": True}
 
 
 @app.get("/api/papers/{slug}/summary")

@@ -30,7 +30,12 @@ body.node-mode #graphModeView { display: none; }
 body.node-mode #nodeModeView { display: flex; }
 .graph-title { font-weight: 600; font-size: .9rem; color: var(--text-muted); margin-bottom: 8px; }
 .graph-hint { font-size: .78rem; color: var(--text-muted); margin-bottom: 10px; }
+.graph-toolbar-wrap { position: relative; }
 .graph-toolbar { display: flex; gap: 8px; margin-bottom: 10px; }
+/* "+ 새 노드" 패널도 노드 뷰 쪽과 같은 이유로 절대 위치로 띄운다 - 열려도
+   그래프 SVG가 아래로 밀려나지 않게. top:100%로 이 wrap(툴바 높이만큼만 차지)
+   바로 아래에 붙이므로 툴바 줄 수가 바뀌어도(반응형 등) 따로 좌표를 안 맞춰도 된다. */
+#createNodeStandaloneContainer { position: absolute; top: 100%; left: 0; z-index: 5; }
 .graph-btn {
   background: none; border: 1px solid var(--border); border-radius: 999px;
   color: var(--text-muted); font-size: .8rem; font-weight: 600;
@@ -82,7 +87,11 @@ body.graph-expanded #graphSummary {
 .node-disabled { opacity: .4; cursor: default !important; }
 
 #btnBackToGraph { align-self: flex-start; margin-bottom: 12px; flex-shrink: 0; }
-#nodeModeBody { flex: 1; overflow-y: auto; padding-right: 4px; }
+#nodeModeBody { flex: 1; overflow-y: auto; padding-right: 4px; position: relative; }
+/* 개념/엔티티 추가·삭제 패널은 본문(제목/메타/본문/개인메모) 흐름 밖에 절대
+   위치로 띄운다 - 그래야 패널을 열고 닫아도 본문이 밀리거나 다시 배치되지 않고
+   항상 그 자리 그대로 있는다. */
+.node-view-side-panel { position: absolute; top: 0; left: 0; z-index: 5; display: flex; flex-direction: column; gap: 8px; }
 /* 노션 페이지처럼 본문을 읽기 좋은 폭으로 가운데 정렬한다 - 패널이 그래프 확대
    등으로 넓어져도 텍스트가 가장자리까지 꽉 차지 않게. #nodeModeBody의 직계
    자식(제목/메타/본문/편집영역)에 각각 건다 - 컨테이너 자체는 스크롤 때문에
@@ -155,3 +164,26 @@ body.graph-expanded #graphSummary {
 .node-view-usernotes-rendered.node-view-usernotes-editing { background: var(--bg); border-color: var(--accent); outline: none; }
 .node-view-usernotes-empty { color: var(--text-muted); font-style: italic; }
 .node-view-edit-status { font-size: .78rem; color: var(--text-muted); margin-top: 6px; display: block; }
+
+/* 사용자가 직접 concept/entity 노드를 만드는 패널(모달이 아니라 트리거 버튼
+   바로 아래 펼쳐지는 인라인 패널) - 논문/concept 노드 뷰, 그래프 화면 세 군데서
+   재사용된다(openCreateNodePanel). */
+.node-view-create-bar { display: flex; gap: 8px; }
+.create-node-panel {
+  /* width를 고정해야 한다 - 아니면 안의 필드가 각자 다른 방식으로 크기를 잡아서
+     (예: 고정값 <input>은 내용 길이와 무관하게 브라우저 기본 폭, <select>는 옵션
+     내용에 맞춰 자동 확장) 진입점마다 패널 폭이 들쭉날쭉해진다. */
+  width: 320px; margin-top: 10px; padding: 12px 14px; border: 1px solid var(--border);
+  border-radius: 10px; background: var(--bg); display: flex; flex-direction: column;
+  gap: 8px; box-sizing: border-box;
+}
+.create-node-row { display: flex; flex-direction: column; gap: 4px; }
+.create-node-row label { font-size: .78rem; color: var(--text-muted); font-weight: 600; }
+.create-node-row input[type="text"], .create-node-row select {
+  width: 100%; box-sizing: border-box;
+  font: inherit; font-size: .85rem; padding: 6px 8px; border: 1px solid var(--border);
+  border-radius: 6px; background: var(--surface); color: var(--text);
+}
+.create-node-row input[type="text"]:disabled, .create-node-row select:disabled { color: var(--text-muted); }
+.create-node-actions { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
+#createNodeStandaloneContainer:empty { display: none; }

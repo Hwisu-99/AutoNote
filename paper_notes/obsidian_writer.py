@@ -1,10 +1,97 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from pathlib import Path
 
 import yaml
+
+from paper_notes.dedup import normalize_label
+
+_FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)
+
+
+def _read_frontmatter_and_body(path: Path) -> tuple[dict, str]:
+    text = path.read_text(encoding="utf-8")
+    match = _FRONTMATTER_RE.match(text)
+    if not match:
+        return {}, text
+    try:
+        frontmatter = yaml.safe_load(match.group(1)) or {}
+    except yaml.YAMLError:
+        frontmatter = {}
+    return frontmatter, text[match.end() :]
+
+
+def _rewrite_frontmatter(path: Path, frontmatter: dict, body: str) -> None:
+    """frontmatter만 다시 쓰고 본문(body)은 손대지 않는다 - write_note()와 달리
+    이미 LLM이 써둔 본문 서사를 매번 다시 만들 필요가 없을 때(사용자가 나중에
+    concept/entity를 직접 추가하는 경우 등) 쓴다."""
+    frontmatter_yaml = yaml.safe_dump(frontmatter, allow_unicode=True, sort_keys=False).strip()
+    path.write_text(f"---\n{frontmatter_yaml}\n---\n{body}", encoding="utf-8")
+
+
+def add_concept_to_note(vault_path: str, title_slug: str, label: str) -> None:
+    """논문 노트 frontmatter의 concepts 목록에 사용자가 직접 추가한 concept 하나를
+    끼워넣는다(본문은 그대로 둠 - 레퍼런스 표 등은 갱신하지 않기로 결정함)."""
+    path = Path(vault_path) / "AutoNote" / title_slug / f"{title_slug}.md"
+    if not path.is_file():
+        raise FileNotFoundError(f"논문 노트를 찾을 수 없습니다: {title_slug}")
+    frontmatter, body = _read_frontmatter_and_body(path)
+    concepts = frontmatter.get("concepts") or []
+    concepts.append({"label": label, "aliases": []})
+    frontmatter["concepts"] = concepts
+    _rewrite_frontmatter(path, frontmatter, body)
+
+
+def add_entity_to_note(vault_path: str, title_slug: str, label: str, concept_label: str | None) -> None:
+    """논문 노트 frontmatter의 entities 목록에 사용자가 직접 추가한 entity 하나를
+    끼워넣는다. concept_label을 주면 그 concept 밑에 걸리고(그래프에서 concept ->
+    entity 에지), 없으면 이 논문에 직접 걸린다(note -> entity 에지) - 기존
+    LLM 추출 entity와 완전히 같은 방식."""
+    path = Path(vault_path) / "AutoNote" / title_slug / f"{title_slug}.md"
+    if not path.is_file():
+        raise FileNotFoundError(f"논문 노트를 찾을 수 없습니다: {title_slug}")
+    frontmatter, body = _read_frontmatter_and_body(path)
+    entities = frontmatter.get("entities") or []
+    entities.append({"label": label, "concept": concept_label, "aliases": []})
+    frontmatter["entities"] = entities
+    _rewrite_frontmatter(path, frontmatter, body)
+
+
+def remove_node_from_note(vault_path: str, title_slug: str, identity_keys: set[str], is_concept: bool) -> None:
+    """concept/entity 노드를 삭제할 때, 그 노드를 참조하던 논문 frontmatter에서도
+    참조를 걷어낸다(안 그러면 실제 노드 파일 없는 "죽은" 라벨이 그래프에 클릭 안 되는
+    상태로 계속 남음). identity_keys는 삭제된 노드의 display_label+aliases를 정규화한
+    집합 - 이 논문 frontmatter에 그 노드가 정확히 어떤 표기로 적혀있었는지 몰라도
+    매칭할 수 있다.
+
+    concept을 지우는 경우 그 concept을 참조하던 entity는 같이 지우지 않고
+    concept 연결만 풀어준다(entity 자체를 지울지는 별도 결정 - entity는 논문에
+    직접 연결된 상태로 남는 게 더 안전한 기본값)."""
+    path = Path(vault_path) / "AutoNote" / title_slug / f"{title_slug}.md"
+    if not path.is_file():
+        return
+    frontmatter, body = _read_frontmatter_and_body(path)
+
+    def is_match(label: str) -> bool:
+        return bool(label) and normalize_label(label) in identity_keys
+
+    if is_concept:
+        frontmatter["concepts"] = [
+            c for c in (frontmatter.get("concepts") or [])
+            if not is_match(c if isinstance(c, str) else c.get("label", ""))
+        ]
+        for e in frontmatter.get("entities") or []:
+            if is_match(e.get("concept") or ""):
+                e["concept"] = None
+    else:
+        frontmatter["entities"] = [
+            e for e in (frontmatter.get("entities") or []) if not is_match(e.get("label", ""))
+        ]
+
+    _rewrite_frontmatter(path, frontmatter, body)
 
 
 def _table_cell(text: object) -> str:
