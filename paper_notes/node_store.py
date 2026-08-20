@@ -152,6 +152,21 @@ def get_user_section(store_root: str, node_type: str, slug: str) -> str:
     return _extract_user_section(path)
 
 
+def get_auto_section(store_root: str, node_type: str, slug: str) -> str:
+    """자동 생성 영역(description + 등장 논문 목록)만 반환한다. get_user_section()과
+    짝을 이뤄, 노드 화면이 이 부분은 읽기 전용으로 보여주고 user-notes 아래만
+    편집 가능하게 나눠 렌더링할 수 있게 한다."""
+    path = _node_dir(store_root, node_type) / f"{slug}.md"
+    if not path.is_file():
+        return ""
+    text = path.read_text(encoding="utf-8")
+    start = text.find(_AUTO_MARKER)
+    end = text.find(_USER_MARKER)
+    if start == -1 or end == -1:
+        return ""
+    return text[start + len(_AUTO_MARKER) : end].strip()
+
+
 def update_user_section(store_root: str, node_type: str, slug: str, user_markdown: str) -> None:
     """사용자가 편집한 메모를 저장한다. frontmatter/자동 생성 영역(등장 논문
     목록)은 건드리지 않고 user_section만 교체한다. 병합돼 사라진 redirect

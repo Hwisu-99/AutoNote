@@ -282,7 +282,10 @@ function renderInline(text, links) {
   html = html.replace(/\*\*(.+?)\*\*/g, (_, inner) => stash(`<strong>${inner}</strong>`));
   // 첨부 이미지: ![alt](경로) -> 즉시 인라인 렌더링(Obsidian 임베드와 같은 경험).
   html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, src) => {
-    return stash(`<img class="md-img" src="${attachmentUrl(src)}" alt="${alt}">`);
+    // data-md-src에 마크다운 원문 그대로의 경로를 남겨둔다 - attachmentUrl()이 화면
+    // 표시용으로 바꾼 src("/attachments/...")가 아니라 이 원본을 써야, 편집 후
+    // serializeToMarkdown()이 저장할 때 경로가 슬래시 유무 등으로 매번 바뀌지 않는다.
+    return stash(`<img class="md-img" src="${attachmentUrl(src)}" data-md-src="${escapeHtml(src)}" alt="${alt}">`);
   });
   // 마크다운 링크: [설명](https://...) -> 클릭하면 새 탭에서 그 주소로 이동.
   html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, (_, label, url) => {
@@ -294,13 +297,17 @@ function renderInline(text, links) {
   // 입힌 텍스트로 둔다.
   html = html.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, target, display) => {
     const label = display || target;
-    const resolved = links?.[target.trim()];
+    const trimmedTarget = target.trim();
+    const resolved = links?.[trimmedTarget];
+    // data-wikilink-target에 원래 타깃 텍스트를 남겨둔다 - resolved.slug는 그
+    // 타깃을 매칭시킨 결과(정규화/퍼지 매칭 슬러그)라 원문과 다를 수 있어서,
+    // 이것 없이는 편집 후 [[타깃|라벨]] 형태를 원문 그대로 복원할 수 없다.
     if (resolved) {
       return stash(
-        `<span class="md-wikilink md-wikilink-clickable" data-node-type="${resolved.type}" data-node-slug="${escapeHtml(resolved.slug)}">${label}</span>`
+        `<span class="md-wikilink md-wikilink-clickable" data-node-type="${resolved.type}" data-node-slug="${escapeHtml(resolved.slug)}" data-wikilink-target="${escapeHtml(trimmedTarget)}">${label}</span>`
       );
     }
-    return stash(`<span class="md-wikilink">${label}</span>`);
+    return stash(`<span class="md-wikilink" data-wikilink-target="${escapeHtml(trimmedTarget)}">${label}</span>`);
   });
   // 마크다운 문법 없이 그냥 붙여넣은 맨 URL도 클릭 가능하게 만든다.
   html = html.replace(/(https?:\/\/[^\s<>()]+)/g, (url) => {
@@ -459,31 +466,32 @@ async function openNodeView(type, slug, fallbackLabel) {
   // 편집(+이미지 붙여넣기)을 지원한다.
   const editable = data.type === 'concept' || data.type === 'entity';
 
-  // obsidian_writer.py는 본문을 항상 "# {title}"로 시작한다(Obsidian에서 노트를
-  // 열었을 때 제목이 보이도록). 여기선 위 .node-view-title이 이미 같은 제목을
-  // 보여주므로, 본문 첫 줄이 그 h1이면 중복 표시되지 않게 걷어낸다.
-  const bodyMarkdown = data.body_markdown.replace(/^#\s+.*(\n+|$)/, '');
+  // obsidian_writer.py는 논문 노트 본문을 항상 "# {title}"로 시작한다(Obsidian에서
+  // 노트를 열었을 때 제목이 보이도록). 여기선 위 .node-view-title이 이미 같은 제목을
+  // 보여주므로, 본문 첫 줄이 그 h1이면 중복 표시되지 않게 걷어낸다. concept/entity
+  // 노드 파일의 자동 생성 영역은 애초에 h1으로 시작하지 않아 이 처리가 필요 없다.
+  const bodyMarkdown = editable
+    ? (data.auto_markdown || '')
+    : data.body_markdown.replace(/^#\s+.*(\n+|$)/, '');
+
+  const userMarkdown = data.user_markdown || '';
+  const userNotesHtml = userMarkdown.trim()
+    ? renderMarkdown(userMarkdown, data.links)
+    : '<p class="node-view-usernotes-empty">클릭해서 메모를 남기세요 (Ctrl+S로 저장, Esc로 취소)</p>';
 
   bodyEl.innerHTML = `
     <div class="node-view-title">${escapeHtml(data.title)}</div>
     <div class="node-view-meta">${metaChips.join('')}</div>
-    <div class="node-view-body" id="nodeViewRenderedBody">${renderMarkdown(bodyMarkdown, data.links)}</div>
+    <div class="node-view-body">${renderMarkdown(bodyMarkdown, data.links)}</div>
     ${editable ? `
-      <div class="node-view-edit-bar">
-        <button class="graph-btn" id="btnEditNotes">메모 편집</button>
-      </div>
-      <div class="node-view-edit-area" id="nodeViewEditArea" style="display:none;">
-        <textarea class="node-view-textarea" id="nodeViewTextarea" placeholder="자유롭게 메모를 남기세요. 이미지를 붙여넣으면(Ctrl+V) 자동으로 첨부됩니다."></textarea>
-        <div class="node-view-edit-actions">
-          <button class="graph-btn" id="btnSaveNotes">저장</button>
-          <button class="graph-btn" id="btnCancelEdit">취소</button>
-          <span class="node-view-edit-status" id="nodeViewEditStatus"></span>
-        </div>
+      <div class="node-view-usernotes">
+        <div class="node-view-body node-view-usernotes-rendered" id="nodeViewUserNotesRendered">${userNotesHtml}</div>
+        <span class="node-view-edit-status" id="nodeViewUserNotesStatus"></span>
       </div>
     ` : ''}
   `;
 
-  if (editable) wireNoteEditing(type, slug, data.title, data.user_markdown || '');
+  if (editable) wireUserNotesEditing(type, slug, userMarkdown, data.links);
   renderMermaidBlocks();
 }
 
@@ -496,75 +504,114 @@ function renderMermaidBlocks() {
   if (blocks.length) mermaid.run({ nodes: blocks });
 }
 
-function wireNoteEditing(type, slug, title, userMarkdown) {
-  const renderedBody = document.getElementById('nodeViewRenderedBody');
-  const editBar = document.querySelector('.node-view-edit-bar');
-  const editArea = document.getElementById('nodeViewEditArea');
-  const textarea = document.getElementById('nodeViewTextarea');
-  const statusEl = document.getElementById('nodeViewEditStatus');
+// Obsidian처럼 렌더링된 메모를 클릭하면 그 화면 자체가 바로 편집 가능한 상태
+// (contenteditable)로 바뀐다 - 이미지·굵게·위키링크가 그대로 보이는 채로 타이핑할
+// 수 있다. Ctrl+S를 누르면 그 시점의 DOM을 다시 우리 마크다운 문법으로
+// 직렬화해(serializeToMarkdown) 저장하고 읽기 전용 렌더 모드로 돌아간다. Esc는
+// 마지막 저장 상태로 되돌리고 취소한다. userMarkdown은 클로저에 들고 있다가
+// 저장 성공 시에만 갱신한다.
+function wireUserNotesEditing(type, slug, userMarkdown, links) {
+  const renderedEl = document.getElementById('nodeViewUserNotesRendered');
+  const statusEl = document.getElementById('nodeViewUserNotesStatus');
+  let editing = false;
 
-  document.getElementById('btnEditNotes').addEventListener('click', () => {
-    textarea.value = userMarkdown;
-    renderedBody.style.display = 'none';
-    editBar.style.display = 'none';
-    editArea.style.display = 'block';
-    textarea.focus();
-  });
+  const emptyHtml = '<p class="node-view-usernotes-empty">클릭해서 메모를 남기세요 (Ctrl+S로 저장, Esc로 취소)</p>';
+  const renderRendered = () => {
+    renderedEl.innerHTML = userMarkdown.trim() ? renderMarkdown(userMarkdown, links) : emptyHtml;
+  };
 
-  document.getElementById('btnCancelEdit').addEventListener('click', () => {
-    editArea.style.display = 'none';
-    editBar.style.display = '';
-    renderedBody.style.display = '';
-  });
+  const enterEdit = () => {
+    if (editing) return;
+    editing = true;
+    if (!userMarkdown.trim()) renderedEl.innerHTML = '';
+    renderedEl.contentEditable = 'true';
+    renderedEl.classList.add('node-view-usernotes-editing');
+    // Enter가 <div> 대신 <p>를 만들게 해서 serializeToMarkdown이 기대하는
+    // 블록 구조와 브라우저 편집 결과가 최대한 어긋나지 않게 한다.
+    try { document.execCommand('defaultParagraphSeparator', false, 'p'); } catch { /* 구형 브라우저는 기본 동작 유지 */ }
+    renderedEl.focus();
+    placeCursorAtEnd(renderedEl);
+  };
 
-  document.getElementById('btnSaveNotes').addEventListener('click', async () => {
-    const saveBtn = document.getElementById('btnSaveNotes');
-    saveBtn.disabled = true;
+  const exitEdit = () => {
+    editing = false;
+    renderedEl.contentEditable = 'false';
+    renderedEl.classList.remove('node-view-usernotes-editing');
+    renderRendered();
+  };
+
+  const save = async () => {
+    const markdown = serializeToMarkdown(renderedEl);
     statusEl.textContent = '저장 중...';
     try {
       const res = await fetch(`/api/nodes/${type}/${encodeURIComponent(slug)}/notes`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_notes_markdown: textarea.value }),
+        body: JSON.stringify({ user_notes_markdown: markdown }),
       });
       if (!res.ok) throw new Error('save failed');
-      openNodeView(type, slug, title);
+      userMarkdown = markdown;
+      exitEdit();
+      statusEl.textContent = '저장됨';
+      setTimeout(() => { if (statusEl.textContent === '저장됨') statusEl.textContent = ''; }, 1500);
     } catch {
-      statusEl.textContent = '저장 실패';
-      saveBtn.disabled = false;
+      statusEl.textContent = '저장 실패 (Ctrl+S로 재시도)';
+    }
+  };
+
+  renderedEl.addEventListener('click', (event) => {
+    // 편집 중엔 본문 안의 위키링크를 눌러도 (저장 안 된 편집 내용을 잃어버리며)
+    // 그래프/다른 노드로 이동해버리지 않도록, 상위 위키링크 클릭 위임으로
+    // 이벤트가 번지는 것을 막는다 - 커서만 그 자리로 옮겨진다.
+    if (editing) { event.stopPropagation(); return; }
+    enterEdit();
+  });
+  renderedEl.addEventListener('keydown', (event) => {
+    if (!editing) return;
+    if ((event.ctrlKey || event.metaKey) && event.key === 's') {
+      event.preventDefault();
+      save();
+    } else if (event.key === 'Escape') {
+      exitEdit();
     }
   });
-
-  // 클립보드에 이미지가 있으면 기본 붙여넣기(텍스트로 들어가버림)를 막고,
-  // 대신 즉시 업로드한 뒤 커서 위치에 ![](경로)를 자동으로 끼워넣는다.
-  textarea.addEventListener('paste', (event) => handleImagePaste(event, type, slug, textarea));
+  // 클립보드에 이미지가 있으면 기본 붙여넣기를 막고, 즉시 업로드해 커서
+  // 위치에 실제 <img>로 끼워넣는다(먼저 로컬 미리보기로 보여주고 업로드가
+  // 끝나면 같은 엘리먼트의 src만 서버 경로로 바꿔치기).
+  renderedEl.addEventListener('paste', (event) => {
+    if (!editing) return; // 편집 중이 아닐 때(contenteditable=false)는 붙여넣기를 무시한다
+    handleRichImagePaste(event, type, slug);
+  });
 }
 
-async function handleImagePaste(event, type, slug, textarea) {
+function placeCursorAtEnd(el) {
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  range.collapse(false);
+  const selection = window.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+async function handleRichImagePaste(event, type, slug) {
   const items = event.clipboardData?.items;
   if (!items) return;
   const imageItem = Array.from(items).find((item) => item.type.startsWith('image/'));
-  if (!imageItem) return; // 이미지가 아니면 기본 붙여넣기(텍스트)를 그대로 둔다
+  if (!imageItem) return; // 이미지가 아니면 기본 붙여넣기(서식 있는 텍스트 등)를 그대로 둔다
 
   event.preventDefault();
   const file = imageItem.getAsFile();
   if (!file) return;
 
-  const start = textarea.selectionStart;
-  const end = textarea.selectionEnd;
-  // 토큰을 매번 다르게 둬서, 업로드가 끝나기 전에 이미지를 연달아 붙여넣어도
-  // 서로 다른 placeholder끼리 잘못 치환되지 않게 한다.
-  const token = Math.random().toString(36).slice(2, 8);
-  const placeholder = `![업로드 중 ${token}...]()`;
-  textarea.value = textarea.value.slice(0, start) + placeholder + textarea.value.slice(end);
-  const cursorAfter = start + placeholder.length;
-  textarea.selectionStart = textarea.selectionEnd = cursorAfter;
+  const previewUrl = URL.createObjectURL(file);
+  const placeholderId = `pending-img-${Math.random().toString(36).slice(2, 8)}`;
+  document.execCommand('insertHTML', false, `<img class="md-img" id="${placeholderId}" src="${previewUrl}" alt="업로드 중...">`);
+  const imgEl = document.getElementById(placeholderId);
 
   const ext = imageItem.type.split('/')[1] || 'png';
   const formData = new FormData();
   formData.append('file', file, `pasted.${ext}`);
 
-  let replacement = '![이미지 업로드 실패]()';
   try {
     const res = await fetch(`/api/nodes/${type}/${encodeURIComponent(slug)}/attachments`, {
       method: 'POST',
@@ -572,11 +619,104 @@ async function handleImagePaste(event, type, slug, textarea) {
     });
     if (!res.ok) throw new Error('upload failed');
     const uploaded = await res.json();
-    replacement = `![](${uploaded.path})`;
+    if (imgEl) {
+      imgEl.src = attachmentUrl(uploaded.path);
+      imgEl.dataset.mdSrc = uploaded.path;
+      imgEl.alt = '';
+      imgEl.removeAttribute('id');
+    }
   } catch {
-    // replacement는 이미 실패 메시지로 설정돼 있음
+    if (imgEl) imgEl.alt = '이미지 업로드 실패';
+  } finally {
+    URL.revokeObjectURL(previewUrl);
   }
-  textarea.value = textarea.value.replace(placeholder, replacement);
+}
+
+// contenteditable로 편집된 DOM을 다시 마크다운 문법으로 직렬화한다. renderMarkdown()이
+// 만드는 태그(md-h2/h3, md-ul, md-blockquote, md-table-wrap, md-code, mermaid, img,
+// wikilink)는 정확히 원래 문법으로 되돌리고, 그 외 브라우저가 타이핑 중에 끼워넣는
+// <div>/<p> 등은 문단으로, 알 수 없는 태그는 서식 없이 텍스트만 보존한다(데이터 손실은
+// 없지만 그 태그의 서식은 잃을 수 있음).
+function serializeToMarkdown(root) {
+  const inline = (node) => {
+    let out = '';
+    node.childNodes.forEach((child) => { out += inlineNode(child); });
+    return out;
+  };
+
+  const inlineNode = (node) => {
+    if (node.nodeType === Node.TEXT_NODE) return node.textContent.replace(/ /g, ' '); // 편집 중 브라우저가 끼워넣는 nbsp를 일반 공백으로
+    if (node.nodeType !== Node.ELEMENT_NODE) return '';
+    const tag = node.tagName.toLowerCase();
+    if (tag === 'br') return '\n';
+    if (tag === 'strong' || tag === 'b') return `**${inline(node)}**`;
+    if (tag === 'img') {
+      const src = node.dataset.mdSrc || node.getAttribute('src') || '';
+      return `![${node.getAttribute('alt') || ''}](${src})`;
+    }
+    if (node.classList?.contains('md-wikilink')) {
+      const label = inline(node);
+      const target = node.dataset.wikilinkTarget || label;
+      return target === label ? `[[${target}]]` : `[[${target}|${label}]]`;
+    }
+    if (tag === 'a') {
+      const href = node.getAttribute('href') || '';
+      const label = inline(node);
+      return label === href ? href : `[${label}](${href})`; // 그냥 붙여넣은 맨 URL은 다시 맨 URL로
+    }
+    return inline(node); // em/u 등 지원 안 하는 서식은 내용만 보존
+  };
+
+  const blockquoteToMarkdown = (bq) => {
+    const lines = [];
+    bq.childNodes.forEach((child) => {
+      if (child.nodeType === Node.ELEMENT_NODE) lines.push(inline(child));
+      else if (child.nodeType === Node.TEXT_NODE && child.textContent.trim()) lines.push(child.textContent.trim());
+    });
+    return lines.map((line) => `> ${line}`).join('\n');
+  };
+
+  const tableToMarkdown = (table) => {
+    const rows = Array.from(table.querySelectorAll('tr')).map((tr) =>
+      Array.from(tr.children).map((cell) => inline(cell).replace(/\|/g, '\\|'))
+    );
+    if (!rows.length) return '';
+    const rowLine = (cells) => `| ${cells.join(' | ')} |`;
+    return [rowLine(rows[0]), rowLine(rows[0].map(() => '---')), ...rows.slice(1).map(rowLine)].join('\n');
+  };
+
+  const blocks = [];
+  root.childNodes.forEach((node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text = node.textContent.trim();
+      if (text) blocks.push(text);
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+
+    const tag = node.tagName.toLowerCase();
+    if (node.classList.contains('md-h2')) { blocks.push(`## ${inline(node)}`); return; }
+    if (node.classList.contains('md-h3')) { blocks.push(`### ${inline(node)}`); return; }
+    if (tag === 'hr' || node.classList.contains('md-hr')) { blocks.push('---'); return; }
+    if (tag === 'ul' || node.classList.contains('md-ul')) {
+      blocks.push(Array.from(node.children).map((li) => `- ${inline(li)}`).join('\n'));
+      return;
+    }
+    if (node.classList.contains('md-blockquote')) { blocks.push(blockquoteToMarkdown(node)); return; }
+    if (node.classList.contains('md-table-wrap')) {
+      const table = node.querySelector('table');
+      if (table) blocks.push(tableToMarkdown(table));
+      return;
+    }
+    if (tag === 'pre' && node.classList.contains('mermaid')) { blocks.push('```mermaid\n' + node.textContent + '\n```'); return; }
+    if (tag === 'pre' && node.classList.contains('md-code')) { blocks.push('```\n' + node.textContent + '\n```'); return; }
+    if (tag === 'img') { blocks.push(inlineNode(node)); return; }
+
+    const text = inline(node).trim();
+    if (text) blocks.push(text);
+  });
+
+  return blocks.join('\n\n');
 }
 
 document.getElementById('btnBackToGraph').addEventListener('click', () => {

@@ -90,8 +90,7 @@ body.graph-expanded #graphSummary {
 .node-view-title,
 .node-view-meta,
 .node-view-body,
-.node-view-edit-bar,
-.node-view-edit-area {
+.node-view-usernotes {
   max-width: 760px;
   margin-left: auto;
   margin-right: auto;
@@ -143,14 +142,16 @@ body.graph-expanded #graphSummary {
   border-radius: 8px; overflow-x: auto; display: flex; justify-content: center;
 }
 
-.node-view-edit-bar { margin-top: 4px; }
-.node-view-edit-area { margin-top: 12px; }
-.node-view-textarea {
-  width: 100%; min-height: 220px; resize: vertical;
-  font-family: inherit; font-size: .85rem; line-height: 1.55; color: var(--text);
-  background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
-  padding: 10px 12px; box-sizing: border-box;
+.node-view-usernotes { margin-top: 28px; padding-top: 16px; border-top: 1px solid var(--border); }
+/* Obsidian의 "클릭하면 바로 편집" 느낌을 내려고, 메모가 비어있을 때도 렌더링
+   영역 전체가 클릭 가능한 영역임을 hover로 알려준다. 편집 중(.node-view-usernotes-editing)엔
+   hover 강조 대신 입력 필드처럼 보이는 테두리로 "지금 편집 중"임을 보여준다. */
+.node-view-usernotes-rendered {
+  cursor: text; border-radius: 8px; padding: 8px 10px; margin: -8px -10px;
+  transition: background .1s ease, border-color .1s ease;
+  border: 1px solid transparent;
 }
-.node-view-textarea:focus { outline: none; border-color: var(--accent); }
-.node-view-edit-actions { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
-.node-view-edit-status { font-size: .78rem; color: var(--text-muted); }
+.node-view-usernotes-rendered:hover:not(.node-view-usernotes-editing) { background: var(--accent-soft); }
+.node-view-usernotes-rendered.node-view-usernotes-editing { background: var(--bg); border-color: var(--accent); outline: none; }
+.node-view-usernotes-empty { color: var(--text-muted); font-style: italic; }
+.node-view-edit-status { font-size: .78rem; color: var(--text-muted); margin-top: 6px; display: block; }

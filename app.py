@@ -24,6 +24,7 @@ from paper_notes.node_store import (
     IMAGE_EXTENSIONS,
     NODE_STORE_ROOT,
     find_node_fuzzy,
+    get_auto_section,
     get_user_section,
     list_nodes,
     node_index,
@@ -380,7 +381,9 @@ async def get_node(node_type: str, slug: str):
             "sources": frontmatter.get("sources") or [],
         },
         "body_markdown": body.strip(),
-        # 편집 UI가 textarea를 채울 때 쓰는, 자동 생성 영역을 뺀 사용자 메모 원문
+        # 노드 화면이 자동 생성 영역(읽기 전용)과 user-notes 영역(클릭하면 바로
+        # 편집되는 영역)을 따로 렌더링할 수 있도록 body_markdown과 별개로 둘을 나눠서도 준다.
+        "auto_markdown": get_auto_section(NODE_STORE_ROOT, node_type, slug),
         "user_markdown": get_user_section(NODE_STORE_ROOT, node_type, slug),
         "links": _resolve_wikilinks(vault_path, body),
     }
