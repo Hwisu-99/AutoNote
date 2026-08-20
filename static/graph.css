@@ -102,7 +102,7 @@ body.graph-expanded #graphSummary {
 .node-view-body .md-h2 { font-size: 1rem; font-weight: 650; margin: 18px 0 8px; }
 .node-view-body .md-h3 { font-size: .92rem; font-weight: 650; margin: 14px 0 6px; color: var(--text-muted); }
 .node-view-body .md-p { margin: 0 0 10px; }
-.node-view-body .md-ul { margin: 0 0 10px; padding-left: 20px; }
+.node-view-body .md-ul, .node-view-body .md-ol { margin: 0 0 10px; padding-left: 20px; }
 .node-view-body .md-hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
 /* 위키링크 색은 그래프 노드 색과 맞춘다: note(논문)=accent, concept=파랑,
    entity=회색. 매칭 안 된(클릭 불가) 위키링크는 어떤 타입인지 모르므로

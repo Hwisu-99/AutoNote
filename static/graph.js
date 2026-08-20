@@ -328,9 +328,35 @@ function isTableSeparatorRow(line) {
   return /^\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?$/.test(line.trim());
 }
 
+// 목록 항목들(들여쓰기 폭·마커 종류·내용만 뽑아둔 평평한 배열)을 들여쓰기 기준
+// 트리로 묶어 중첩 <ul>/<ol>로 그린다. Turndown이 블로그의 계층 있는 목록(항목
+// 아래 하위 항목)을 들여쓰기로 표현해서 내보내므로, 부모/자식 관계를 그대로
+// 살리려면 한 줄씩 독립적으로 처리해선 안 되고 이렇게 통째로 봐야 한다.
+// 들여쓰기가 불규칙해 부모를 못 찾는 항목이 있어도(둘째 while의 첫 분기) 무한
+// 루프에 빠지거나 항목이 사라지지 않고, 그 자리에서 새 목록으로 취급된다.
+function buildNestedListHtml(items, links) {
+  let i = 0;
+  const render = (baseIndent) => {
+    let out = '';
+    while (i < items.length && items[i].indent >= baseIndent) {
+      if (items[i].indent > baseIndent) { out += render(items[i].indent); continue; }
+      const type = items[i].type;
+      let inner = '';
+      while (i < items.length && items[i].indent === baseIndent && items[i].type === type) {
+        const content = renderInline(items[i].content, links);
+        i++;
+        const nested = (i < items.length && items[i].indent > baseIndent) ? render(items[i].indent) : '';
+        inner += `<li>${content}${nested}</li>`;
+      }
+      out += `<${type === 'ol' ? 'ol' : 'ul'} class="md-${type}">${inner}</${type === 'ol' ? 'ol' : 'ul'}>`;
+    }
+    return out;
+  };
+  return render(items[0].indent);
+}
+
 function renderMarkdown(markdown, links = {}) {
   const parts = [];
-  let listOpen = false;
   let bqOpen = false;
   let paragraph = [];
   let tableBuffer = [];
@@ -342,9 +368,6 @@ function renderMarkdown(markdown, links = {}) {
       parts.push(`<p class="md-p">${renderInline(paragraph.join(' '), links)}</p>`);
       paragraph = [];
     }
-  };
-  const closeList = () => {
-    if (listOpen) { parts.push('</ul>'); listOpen = false; }
   };
   const closeBlockquote = () => {
     if (bqOpen) { parts.push('</blockquote>'); bqOpen = false; }
@@ -368,9 +391,15 @@ function renderMarkdown(markdown, links = {}) {
     }
     tableBuffer = [];
   };
-  const flushAll = () => { flushParagraph(); closeList(); closeBlockquote(); flushTable(); };
+  const flushAll = () => { flushParagraph(); closeBlockquote(); flushTable(); };
 
-  for (const rawLine of markdown.split('\n')) {
+  // 마커(-, 1.) + 들여쓰기 폭을 함께 뽑는다 - 중첩 목록 인식은 들여쓰기가 있는 그대로의
+  // rawLine을 봐야 하므로, 다른 모든 검사에 쓰는 trim된 line과는 별도로 확인한다.
+  const listItemRe = /^(\s*)([-*]|\d+\.)\s+(.*)$/;
+
+  const lines = markdown.split('\n');
+  for (let idx = 0; idx < lines.length; idx++) {
+    const rawLine = lines[idx];
     const line = rawLine.trim();
 
     const fence = line.match(/^```\s*(\w*)\s*$/);
@@ -407,7 +436,7 @@ function renderMarkdown(markdown, links = {}) {
     if (h1) { flushAll(); parts.push(`<div class="md-h2">${renderInline(h1[1], links)}</div>`); continue; }
 
     if (line.startsWith('|') && line.endsWith('|')) {
-      flushParagraph(); closeList(); closeBlockquote();
+      flushParagraph(); closeBlockquote();
       tableBuffer.push(line);
       continue;
     }
@@ -415,22 +444,31 @@ function renderMarkdown(markdown, links = {}) {
 
     const bq = line.match(/^>\s?(.*)$/);
     if (bq) {
-      flushParagraph(); closeList();
+      flushParagraph();
       if (!bqOpen) { parts.push('<blockquote class="md-blockquote">'); bqOpen = true; }
       parts.push(`<p>${renderInline(bq[1], links)}</p>`);
       continue;
     }
     closeBlockquote();
 
-    const li = line.match(/^-\s+(.*)$/);
-    if (li) {
+    // 목록: 이 줄부터 시작해 연속으로 이어지는 목록 항목(들여쓰기 깊이 무관)을
+    // 한 번에 다 모은 뒤 buildNestedListHtml()에 통째로 넘긴다 - 한 줄씩 처리하면
+    // 중첩된 하위 목록을 부모 항목과의 관계 없이 별개의 형제 항목으로 오인하게 된다
+    // (Turndown이 블로그의 계층 있는 목록을 들여쓰기로 표현해서 내보낼 때 특히 문제).
+    if (listItemRe.test(rawLine)) {
       flushParagraph();
-      if (!listOpen) { parts.push('<ul class="md-ul">'); listOpen = true; }
-      parts.push(`<li>${renderInline(li[1], links)}</li>`);
+      const items = [];
+      while (idx < lines.length) {
+        const m = listItemRe.exec(lines[idx]);
+        if (!m) break;
+        items.push({ indent: m[1].length, type: /\d/.test(m[2]) ? 'ol' : 'ul', content: m[3] });
+        idx++;
+      }
+      idx--; // for 루프의 idx++가 다음 미처리 줄로 이어지도록 마지막으로 소비한 줄에 맞춰둔다
+      parts.push(buildNestedListHtml(items, links));
       continue;
     }
 
-    closeList();
     paragraph.push(line);
   }
   flushAll();
@@ -575,13 +613,41 @@ function wireUserNotesEditing(type, slug, userMarkdown, links) {
       exitEdit();
     }
   });
-  // 클립보드에 이미지가 있으면 기본 붙여넣기를 막고, 즉시 업로드해 커서
-  // 위치에 실제 <img>로 끼워넣는다(먼저 로컬 미리보기로 보여주고 업로드가
-  // 끝나면 같은 엘리먼트의 src만 서버 경로로 바꿔치기).
   renderedEl.addEventListener('paste', (event) => {
     if (!editing) return; // 편집 중이 아닐 때(contenteditable=false)는 붙여넣기를 무시한다
-    handleRichImagePaste(event, type, slug);
+    handleRichPaste(event, type, slug, links);
   });
+}
+
+// 붙여넣기 종류에 따라 분기한다:
+// 1) 블로그 등에서 복사한 서식 있는 HTML(text/html)이 있으면, 그 자리에서 바로
+//    Turndown으로 우리 마크다운으로 변환한 뒤 renderMarkdown()으로 다시 그려서
+//    끼워넣는다 - 붙여넣는 순간부터 이미 "우리 스타일"이라, Ctrl+S로 저장했다가
+//    다시 열어도 붙여넣은 직후 모습과 항상 똑같다(서식이 저장 시점에만 깨지는
+//    문제를 애초에 만들지 않음).
+// 2) HTML 없이 이미지 하나만 있으면(스크린샷 등) 기존처럼 업로드 후 <img> 삽입.
+// 3) 둘 다 없으면(순수 텍스트 등) 기본 붙여넣기 동작에 맡긴다.
+async function handleRichPaste(event, type, slug, links) {
+  const html = event.clipboardData?.getData('text/html');
+  if (html && html.trim()) {
+    event.preventDefault();
+    const markdown = htmlToMarkdown(html);
+    document.execCommand('insertHTML', false, renderMarkdown(markdown, links));
+    return;
+  }
+  await handleRichImagePaste(event, type, slug);
+}
+
+let _turndownService = null;
+function htmlToMarkdown(html) {
+  // CDN 로드가 실패했으면(오프라인 등) 서식 변환은 포기하고 태그만 걷어낸 텍스트로
+  // 대신 삽입한다 - 이 시점엔 이미 preventDefault()가 호출된 뒤라 브라우저 기본
+  // 붙여넣기로는 못 돌아가므로, 완전히 잃는 것보단 텍스트라도 보존한다.
+  if (typeof TurndownService === 'undefined') return html.replace(/<[^>]+>/g, ' ').trim();
+  if (!_turndownService) {
+    _turndownService = new TurndownService({ headingStyle: 'atx', bulletListMarker: '-' });
+  }
+  return _turndownService.turndown(html);
 }
 
 function placeCursorAtEnd(el) {
@@ -667,6 +733,31 @@ function serializeToMarkdown(root) {
     return inline(node); // em/u 등 지원 안 하는 서식은 내용만 보존
   };
 
+  // <li> 하나를 "이 항목 자체의 텍스트"와 "그 아래 중첩된 하위 목록(있다면)"으로
+  // 나눠 되돌린다 - inline()에 그냥 넘기면 중첩 <ul>/<ol>의 <li>들까지 구분 없이
+  // 한 줄로 뭉개지므로, 목록 자식은 따로 떼어 listToMarkdown()으로 재귀 처리한다.
+  const isListEl = (node) =>
+    node.nodeType === Node.ELEMENT_NODE &&
+    (['ul', 'ol'].includes(node.tagName.toLowerCase()) || node.classList?.contains('md-ul') || node.classList?.contains('md-ol'));
+
+  const liToMarkdown = (li, depth) => {
+    let text = '';
+    let nested = '';
+    li.childNodes.forEach((child) => {
+      if (isListEl(child)) nested += '\n' + listToMarkdown(child, depth + 1);
+      else text += inlineNode(child);
+    });
+    return text + nested;
+  };
+
+  const listToMarkdown = (listEl, depth) => {
+    const isOl = listEl.tagName.toLowerCase() === 'ol' || listEl.classList?.contains('md-ol');
+    const indent = '   '.repeat(depth); // 절대 폭은 의미 없고, 부모보다 깊기만 하면 renderMarkdown이 중첩으로 인식한다.
+    return Array.from(listEl.children)
+      .map((li, i) => `${indent}${isOl ? `${i + 1}. ` : '- '}${liToMarkdown(li, depth)}`)
+      .join('\n');
+  };
+
   const blockquoteToMarkdown = (bq) => {
     const lines = [];
     bq.childNodes.forEach((child) => {
@@ -698,8 +789,10 @@ function serializeToMarkdown(root) {
     if (node.classList.contains('md-h2')) { blocks.push(`## ${inline(node)}`); return; }
     if (node.classList.contains('md-h3')) { blocks.push(`### ${inline(node)}`); return; }
     if (tag === 'hr' || node.classList.contains('md-hr')) { blocks.push('---'); return; }
-    if (tag === 'ul' || node.classList.contains('md-ul')) {
-      blocks.push(Array.from(node.children).map((li) => `- ${inline(li)}`).join('\n'));
+    if (isListEl(node)) {
+      // 원래 번호를 보존하려 하지 않고 항상 1부터 순서대로 다시 매긴다(브라우저
+      // 편집 중 항목이 추가/삭제돼도 항상 유효한 번호가 나오게).
+      blocks.push(listToMarkdown(node, 0));
       return;
     }
     if (node.classList.contains('md-blockquote')) { blocks.push(blockquoteToMarkdown(node)); return; }

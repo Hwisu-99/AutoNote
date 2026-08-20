@@ -240,6 +240,9 @@
 
 <script src="https://d3js.org/d3.v7.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<!-- concept/entity 메모에 블로그 등 외부 페이지를 복사-붙여넣기할 때, 그 서식 섞인
+     HTML을 우리가 지원하는 마크다운으로 즉시 변환해두기 위함(graph.js의 handleRichPaste). -->
+<script src="https://unpkg.com/turndown@7.2.0/dist/turndown.js"></script>
 <script>
   // startOnLoad:false - 노트를 열 때(openNodeView) graph.js가 mermaid.run()을 직접
   // 호출한다. 페이지에 실제로 있는 mermaid 블록만 그 순간 골라 그리기 위함.
