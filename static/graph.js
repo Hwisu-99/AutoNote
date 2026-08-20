@@ -581,6 +581,9 @@ async function handleImagePaste(event, type, slug, textarea) {
 
 document.getElementById('btnBackToGraph').addEventListener('click', () => {
   document.body.classList.remove('node-mode');
+  // 노드 화면에서 메모/첨부 이미지를 편집했을 수 있으니, 뒤에 깔려 있던(편집 전
+  // 상태로 멈춰있는) 그래프를 새로고침해서 방금 바뀐 노드/에지가 바로 보이게 한다.
+  loadGraph(currentFocus, currentFocus !== null);
 });
 
 // 노드 본문은 매번 innerHTML을 통째로 새로 그리므로(openNodeView), 위키링크마다
