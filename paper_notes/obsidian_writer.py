@@ -34,12 +34,16 @@ def _rewrite_frontmatter(path: Path, frontmatter: dict, body: str) -> None:
 
 def add_concept_to_note(vault_path: str, title_slug: str, label: str) -> None:
     """논문 노트 frontmatter의 concepts 목록에 사용자가 직접 추가한 concept 하나를
-    끼워넣는다(본문은 그대로 둠 - 레퍼런스 표 등은 갱신하지 않기로 결정함)."""
+    끼워넣는다(본문은 그대로 둠 - 레퍼런스 표 등은 갱신하지 않기로 결정함). 이미 같은
+    라벨이 있으면 다시 추가하지 않는다 - 노드를 같은 논문에 두 번 연결(드래그 연결
+    제스처를 실수로 두 번 하는 등)해도 frontmatter에 중복 항목이 쌓이지 않게 한다."""
     path = Path(vault_path) / "AutoNote" / title_slug / f"{title_slug}.md"
     if not path.is_file():
         raise FileNotFoundError(f"논문 노트를 찾을 수 없습니다: {title_slug}")
     frontmatter, body = _read_frontmatter_and_body(path)
     concepts = frontmatter.get("concepts") or []
+    if any(normalize_label(c if isinstance(c, str) else c.get("label", "")) == normalize_label(label) for c in concepts):
+        return
     concepts.append({"label": label, "aliases": []})
     frontmatter["concepts"] = concepts
     _rewrite_frontmatter(path, frontmatter, body)
@@ -49,12 +53,15 @@ def add_entity_to_note(vault_path: str, title_slug: str, label: str, concept_lab
     """논문 노트 frontmatter의 entities 목록에 사용자가 직접 추가한 entity 하나를
     끼워넣는다. concept_label을 주면 그 concept 밑에 걸리고(그래프에서 concept ->
     entity 에지), 없으면 이 논문에 직접 걸린다(note -> entity 에지) - 기존
-    LLM 추출 entity와 완전히 같은 방식."""
+    LLM 추출 entity와 완전히 같은 방식. add_concept_to_note()와 같은 이유로 이미
+    같은 라벨이 있으면 다시 추가하지 않는다."""
     path = Path(vault_path) / "AutoNote" / title_slug / f"{title_slug}.md"
     if not path.is_file():
         raise FileNotFoundError(f"논문 노트를 찾을 수 없습니다: {title_slug}")
     frontmatter, body = _read_frontmatter_and_body(path)
     entities = frontmatter.get("entities") or []
+    if any(normalize_label(e.get("label", "")) == normalize_label(label) for e in entities):
+        return
     entities.append({"label": label, "concept": concept_label, "aliases": []})
     frontmatter["entities"] = entities
     _rewrite_frontmatter(path, frontmatter, body)

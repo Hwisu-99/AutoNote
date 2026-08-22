@@ -28,7 +28,9 @@ from paper_notes.node_store import (
     delete_node,
     find_node_fuzzy,
     get_auto_section,
+    get_display_label,
     get_user_section,
+    link_node_to_paper,
     list_nodes,
     node_index,
     remove_source,
@@ -417,6 +419,72 @@ async def add_entity(slug: str, payload: _AddEntityPayload):
     return {"slug": node_slug}
 
 
+class _CreateOrphanNodePayload(BaseModel):
+    type: str
+    label: str
+    category: str | None = None
+    anchor_id: str | None = None
+
+
+@app.post("/api/nodes")
+async def create_orphan_node(payload: _CreateOrphanNodePayload):
+    """그래프 배경 우클릭으로 만드는 순수 orphan concept/entity - 어느 논문에도 아직
+    연결되지 않는다(carrier 없음). 어느 논문과 연결할지는 나중에 그래프에서 다른
+    노드로 드래그해서(POST /api/nodes/{type}/{slug}/link) 따로 정한다.
+
+    anchor_id는 생성 당시 그래프에서 가장 가까웠던 다른 노드의 id를 그대로 저장해둔다 -
+    브라우저 새로고침이나 서버 재시작으로 프론트의 위치 캐시가 사라져도, 그래프를 다시
+    그릴 때 이 힌트로 그 노드 근처에 나타나게 하기 위함(graph_builder.py 참고)."""
+    if payload.type not in ("concept", "entity"):
+        raise HTTPException(status_code=400, detail="type은 concept 또는 entity여야 합니다.")
+    label = payload.label.strip()
+    if not label:
+        raise HTTPException(status_code=400, detail="이름을 입력하세요.")
+
+    try:
+        node_slug = create_node_manual(
+            NODE_STORE_ROOT, payload.type, label, None, None, category=payload.category, anchor_id=payload.anchor_id
+        )
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"slug": node_slug}
+
+
+class _LinkNodePayload(BaseModel):
+    paper_slug: str
+    concept_label: str | None = None
+
+
+@app.post("/api/nodes/{node_type}/{slug}/link")
+async def link_node(node_type: str, slug: str, payload: _LinkNodePayload):
+    """그래프에서 concept/entity 노드(orphan이든 이미 다른 논문에 연결돼 있던 것이든)를
+    다른 논문 위로 드래그해서 연결할 때 호출된다. 노드 파일의 sources[]와 그 논문의
+    frontmatter concepts/entities 목록을 같이 갱신해야 그래프가 양방향에서 일관되게
+    보인다 - 한쪽만 갱신하면 delete_node_endpoint가 정리하는 것과 반대로 "논문엔
+    있는데 노드 파일엔 없는" 또는 그 반대인 어긋난 상태가 생긴다."""
+    if node_type not in ("concept", "entity"):
+        raise HTTPException(status_code=404, detail="알 수 없는 노드 타입입니다.")
+
+    vault_path = get_vault_path()
+    note_path = Path(vault_path) / "AutoNote" / payload.paper_slug / f"{payload.paper_slug}.md"
+    if not note_path.is_file():
+        raise HTTPException(status_code=404, detail="연결할 논문 노트를 찾을 수 없습니다.")
+    frontmatter, _ = _parse_frontmatter(note_path.read_text(encoding="utf-8"))
+    paper_title = frontmatter.get("title") or payload.paper_slug
+
+    try:
+        link_node_to_paper(NODE_STORE_ROOT, node_type, slug, payload.paper_slug, paper_title)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    label = get_display_label(NODE_STORE_ROOT, node_type, slug)
+    if node_type == "concept":
+        add_concept_to_note(vault_path, payload.paper_slug, label)
+    else:
+        add_entity_to_note(vault_path, payload.paper_slug, label, payload.concept_label)
+    return {"ok": True}
+
+
 @app.get("/api/nodes/{node_type}/{slug}")
 async def get_node(node_type: str, slug: str):
     """그래프 뷰에서 노드를 클릭했을 때 보여줄 md 내용을 반환한다. note는 vault의
@@ -506,12 +574,55 @@ async def post_node_attachment(node_type: str, slug: str, file: UploadFile = Fil
     return {"path": path}
 
 
+def _find_linked_entity_slugs(concept_frontmatter: dict, vault_path: str) -> list[dict]:
+    """이 concept의 sources에 있는 논문들을 훑어서, 그 논문 frontmatter의
+    entities[] 중 concept 필드가 이 concept을 가리키는 항목을 찾고, 각각을
+    node_store의 실제 entity 노드 파일(슬러그)로 풀어낸다. concept 삭제 시
+    "entity도 같이 지울지" 물어보는 대화상자에 무엇이 딸려있는지 보여주는 용도라,
+    호출 시점의 논문 frontmatter가 아직 이 concept 참조를 갖고 있어야 한다(삭제
+    처리 중 참조를 먼저 지워버린 뒤에 호출하면 항상 빈 목록이 나온다)."""
+    identity_keys = {
+        normalize_label(name)
+        for name in [concept_frontmatter.get("display_label", ""), *(concept_frontmatter.get("aliases") or [])]
+        if name
+    }
+    entity_nodes = list_nodes(NODE_STORE_ROOT, "entity")
+    entity_idx = node_index(NODE_STORE_ROOT, "entity")
+    found: dict[str, dict] = {}
+    for source in concept_frontmatter.get("sources") or []:
+        note_path = Path(vault_path) / "AutoNote" / source["slug"] / f"{source['slug']}.md"
+        if not note_path.is_file():
+            continue
+        frontmatter, _ = _parse_frontmatter(note_path.read_text(encoding="utf-8"))
+        for e in frontmatter.get("entities") or []:
+            if normalize_label(e.get("concept") or "") not in identity_keys:
+                continue
+            node = find_node_fuzzy(entity_nodes, e.get("label", ""), e.get("aliases"), entity_idx)
+            if node:
+                found[node["slug"]] = {"slug": node["slug"], "label": node["display_label"]}
+    return list(found.values())
+
+
+@app.get("/api/nodes/concept/{slug}/linked-entities")
+async def get_concept_linked_entities(slug: str):
+    """concept 삭제 확인 창을 띄우기 전에, 이 concept 밑에 entity가 걸려 있는지
+    미리 알아본다 - 있으면 그래프 UI가 "entity도 같이 지울지" 선택지를 보여준다."""
+    concept = next((n for n in list_nodes(NODE_STORE_ROOT, "concept") if n["slug"] == slug), None)
+    if not concept:
+        raise HTTPException(status_code=404, detail="노드를 찾을 수 없습니다.")
+    return {"entities": _find_linked_entity_slugs(concept, get_vault_path())}
+
+
 @app.delete("/api/nodes/{node_type}/{slug}")
-async def delete_node_endpoint(node_type: str, slug: str):
+async def delete_node_endpoint(node_type: str, slug: str, cascade_entities: bool = False):
     """사용자가 그래프에서 직접 만들었든 LLM이 뽑았든, concept/entity 노드를
     통째로 지운다. 노드 파일만 지우면 그 노드를 참조하던 논문들의 frontmatter에
     실제 파일 없는 "죽은" 라벨만 남아 그래프에 클릭 안 되는 상태로 계속 나타나므로,
-    삭제된 노드의 sources에 있던 논문들도 같이 훑어 참조를 정리한다."""
+    삭제된 노드의 sources에 있던 논문들도 같이 훑어 참조를 정리한다.
+
+    cascade_entities=true면(concept 삭제일 때만 의미 있음) 그 concept 밑에 걸려있던
+    entity 노드들까지 함께 지운다 - 기본값(false)은 기존 동작 그대로: entity는
+    안 지우고 concept 소속만 풀어 논문에 직접 연결된 상태로 남긴다."""
     if node_type not in ("concept", "entity"):
         raise HTTPException(status_code=404, detail="알 수 없는 노드 타입입니다.")
 
@@ -520,17 +631,41 @@ async def delete_node_endpoint(node_type: str, slug: str):
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    vault_path = get_vault_path()
+
+    # cascade로 지울 entity 슬러그는, 아래에서 concept의 논문 참조를 정리(concept
+    # 필드를 null로 되돌림)하기 전에 미리 찾아둬야 한다 - 그 정리가 끝나면 더 이상
+    # 어느 entity가 이 concept 밑에 있었는지 논문 frontmatter로는 알 수 없어진다.
+    cascade_entity_slugs: list[str] = []
+    if node_type == "concept" and cascade_entities:
+        cascade_entity_slugs = [e["slug"] for e in _find_linked_entity_slugs(frontmatter, vault_path)]
+
     identity_keys = {
         normalize_label(name)
         for name in [frontmatter.get("display_label", ""), *(frontmatter.get("aliases") or [])]
         if name
     }
-    vault_path = get_vault_path()
     for source in frontmatter.get("sources") or []:
         try:
             remove_node_from_note(vault_path, source["slug"], identity_keys, node_type == "concept")
         except Exception as exc:  # noqa: BLE001 - 한 논문 정리 실패가 다른 논문 정리를 막지 않음
             print(f"  [경고] {source['slug']} frontmatter 정리 실패: {exc}")
+
+    for entity_slug in cascade_entity_slugs:
+        try:
+            entity_frontmatter = delete_node(NODE_STORE_ROOT, "entity", entity_slug)
+        except FileNotFoundError:
+            continue
+        entity_identity_keys = {
+            normalize_label(name)
+            for name in [entity_frontmatter.get("display_label", ""), *(entity_frontmatter.get("aliases") or [])]
+            if name
+        }
+        for source in entity_frontmatter.get("sources") or []:
+            try:
+                remove_node_from_note(vault_path, source["slug"], entity_identity_keys, False)
+            except Exception as exc:  # noqa: BLE001
+                print(f"  [경고] {source['slug']} frontmatter 정리 실패: {exc}")
 
     return {"ok": True}
 

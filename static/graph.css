@@ -71,6 +71,11 @@ body.graph-expanded #graphSummary {
 }
 
 .node-note, .node-tag, .node-concept, .node-entity, .node-attachment { transition: opacity .15s ease; }
+/* 실제로 보이는 원(6~8px)은 클릭/우클릭/드래그 시작점을 맞추기엔 너무 작아서, 눈에
+   안 보이는(투명 채움) 더 넓은 원(hitArea, r=16)을 그 위에 겹쳐 그리고 모든 포인터
+   상호작용은 여기에만 건다 - 시각적으로는 원래 크기 그대로지만 실제 반응 영역은
+   훨씬 넓다. */
+.node-hit-area { cursor: grab; }
 .node-note { fill: var(--accent); stroke: var(--surface); stroke-width: 1.5px; cursor: grab; }
 .node-tag { fill: var(--tag-green); stroke: var(--surface); stroke-width: 1px; cursor: grab; }
 .node-concept { fill: var(--entity-blue); stroke: var(--surface); stroke-width: 1px; cursor: grab; }
@@ -85,6 +90,19 @@ body.graph-expanded #graphSummary {
 /* concept/entity 중 node_store에 실제 md 파일이 아직 없는 노드는 클릭 비활성화 -
    시각적으로도 흐리게 표시해서 클릭해도 반응 없는 노드라는 걸 알 수 있게 한다. */
 .node-disabled { opacity: .4; cursor: default !important; }
+
+/* 노드를 2초 이상 눌러 "드래그해 연결" 모드로 들어가는 순간 확실히 알 수 있도록
+   눈에 보이는 원 자체에 강조 테두리+발광 효과를 준다 - 점선 미리보기 선만으로는
+   제자리에서 움직이지 않는 동안 길이가 0이라 눈에 띄지 않는다. */
+@keyframes node-connecting-pulse {
+  0%, 100% { stroke-width: 3px; }
+  50% { stroke-width: 5px; }
+}
+.node-connecting {
+  stroke: var(--accent) !important;
+  animation: node-connecting-pulse .6s ease-in-out infinite;
+  filter: drop-shadow(0 0 4px var(--accent));
+}
 
 #btnBackToGraph { align-self: flex-start; margin-bottom: 12px; flex-shrink: 0; }
 #nodeModeBody { flex: 1; overflow-y: auto; padding-right: 4px; position: relative; }
@@ -187,3 +205,25 @@ body.graph-expanded #graphSummary {
 .create-node-row input[type="text"]:disabled, .create-node-row select:disabled { color: var(--text-muted); }
 .create-node-actions { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
 #createNodeStandaloneContainer:empty { display: none; }
+
+/* 그래프 배경/노드 우클릭 컨텍스트 메뉴(생성 2개 또는 삭제 1개, 연결 시 논문 선택
+   메뉴도 재사용) - 클릭 좌표에 고정 위치로 뜬다. */
+.graph-context-menu {
+  position: fixed; z-index: 50; display: flex; flex-direction: column; gap: 2px;
+  min-width: 120px; padding: 4px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface); box-shadow: var(--shadow);
+}
+.graph-context-menu-item {
+  background: none; border: none; text-align: left; font: inherit; font-size: .82rem;
+  color: var(--text); padding: 7px 10px; border-radius: 5px; cursor: pointer;
+}
+.graph-context-menu-item:hover { background: var(--accent-soft); color: var(--accent); }
+
+/* orphan 생성/자동연결 생성 패널처럼 트리거 버튼이 아니라 클릭 좌표에 떠야 하는
+   create-node-panel을 감싸는 얕은 래퍼 - 패널 자체 스타일은 그대로 재사용한다. */
+.graph-floating-panel { position: fixed; z-index: 50; }
+.graph-floating-panel .create-node-panel { margin-top: 0; }
+
+/* 노드를 2초 홀드 후 드래그하는 동안 보이는 임시 연결선 - 확정된 에지(.graph-link)와
+   구분되도록 점선으로 그린다. */
+.graph-connect-preview { stroke: var(--accent); stroke-width: 1.8px; stroke-dasharray: 4 3; pointer-events: none; }

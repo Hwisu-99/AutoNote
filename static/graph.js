@@ -13,8 +13,201 @@ let simulation = null;
 let currentFocus = null;
 let currentGraphData = null;
 let hideTagNodes = !toggleTagsInput.checked;
+// openNodeView()가 마지막으로 연 노드를 기억해둔다 - 노트 본문에서 텍스트를 선택해
+// 우클릭으로 생성할 때 "어느 논문/개념/엔티티를 보고 있었는지"를 알아야 자동 연결할
+// 수 있다.
+let currentOpenNode = null;
+// currentOpenNode를 그래프 노드 id(note는 slug 그대로, concept/entity는 "type:라벨")로
+// 바꾼다 - _nodePositions에서 "지금 보고 있던 노드가 그래프에서 마지막으로 어디
+// 있었는지" 찾을 때 쓴다.
+function currentOpenNodeGraphId() {
+  if (!currentOpenNode) return null;
+  return currentOpenNode.type === 'note' ? currentOpenNode.slug : `${currentOpenNode.type}:${currentOpenNode.title}`;
+}
+// 노드 id -> 마지막으로 기록된 {x, y}. 두 곳에서 쓴다: (1) 텍스트 선택 우클릭으로
+// 자동연결 노드를 만들 때 "지금 보고 있던 carrier 노드가 마지막으로 어디 있었는지"
+// 찾는 용도(그래프 화면 자체가 안 보이는 상태라 클릭 좌표를 못 씀), (2) renderGraph()가
+// 에지 없는(orphan) 노드의 초기 위치를 이어서 쓰는 용도(포커스/전체 그래프를 오가도
+// 자리 유지). 에지가 있는 노드에는 절대 안 쓴다 - 예전에 "모든 노드"에 이 방식을
+// 썼다가 포커스/전체 그래프의 서로 다른 좌표계가 섞여 그래프 전체가 화면 밖으로
+// 밀려나는 문제가 있었다.
+const _nodePositions = new Map();
+
+// orphan(에지 없는) 노드 id -> { anchorId, dx, dy }. 생성 시점에 가장 가까웠던
+// 노드(타입 무관 - 논문/개념/엔티티 다 될 수 있음)와 그때의 상대 위치(dx/dy)를
+// 기억해뒀다가, renderGraph()가 매 tick마다 "그 노드의 지금 위치 + dx/dy"로
+// orphan을 계속 따라다니게 한다 - 그래야 포커스 뷰든 수백 개짜리 전체 그래프든,
+// 그 기준 노드가 어디로 배치되든 orphan은 항상 그 옆에 있는다(정확한 화면 좌표를
+// 고정하면 전체 그래프처럼 완전히 다른 레이아웃에서는 엉뚱한 자리에 못박히게
+// 된다). 기준 노드가 실제로 연결되거나(더 이상 orphan이 아니게 됨) 사용자가 직접
+// 드래그로 옮기면(수동으로 자리를 정했으므로) 이 항목은 지운다.
+const _orphanAnchors = new Map();
+
+// 그래프에 지금 렌더링된 노드(타입 무관) 중 (x, y)에 가장 가까운 것의 id를 찾는다 -
+// orphan 생성 시 "이 노드는 저 노드 근처에 있다"고 기억해두는 기준점으로 쓴다.
+function findNearestNodeId(x, y) {
+  if (!currentGraphData) return null;
+  let bestId = null;
+  let bestDist = Infinity;
+  for (const n of currentGraphData.nodes) {
+    const pos = _nodePositions.get(n.id);
+    if (!pos) continue;
+    const dist = Math.hypot(pos.x - x, pos.y - y);
+    if (dist < bestDist) { bestDist = dist; bestId = n.id; }
+  }
+  return bestId;
+}
 
 btnFullGraph.addEventListener('click', () => loadGraph(null, false));
+
+// 그래프 배경/노드 우클릭 시 뜨는 작은 플로팅 메뉴 (개념/엔티티 생성 2개, 또는 삭제
+// 1개). 화면 좌표(clientX/Y) 기준 position:fixed라 그래프 확대/축소·팬과 무관하게
+// 클릭한 자리 그대로 뜬다.
+let _activeContextMenu = null;
+function closeContextMenu() {
+  _activeContextMenu?.remove();
+  _activeContextMenu = null;
+  document.removeEventListener('click', closeContextMenu, true);
+  document.removeEventListener('keydown', _onContextMenuEscape, true);
+}
+function _onContextMenuEscape(event) {
+  if (event.key === 'Escape') closeContextMenu();
+}
+function showContextMenu(clientX, clientY, items) {
+  closeContextMenu();
+  const menu = document.createElement('div');
+  menu.className = 'graph-context-menu';
+  menu.style.left = `${clientX}px`;
+  menu.style.top = `${clientY}px`;
+  items.forEach((item) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'graph-context-menu-item';
+    btn.textContent = item.label;
+    btn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      closeContextMenu();
+      item.onClick();
+    });
+    menu.appendChild(btn);
+  });
+  document.body.appendChild(menu);
+  _activeContextMenu = menu;
+  // 이번 우클릭 이벤트 자체가 지금 document에 새로 등록하는 리스너까지 곧장
+  // 버블링해 메뉴를 열자마자 닫아버리지 않도록, 다음 tick에 등록한다.
+  setTimeout(() => {
+    document.addEventListener('click', closeContextMenu, true);
+    document.addEventListener('keydown', _onContextMenuEscape, true);
+  }, 0);
+}
+
+// orphan 노드 생성 패널/자동연결 생성 패널처럼 클릭 좌표에 떠야 하는(트리거 버튼
+// 아래 고정 위치가 아닌) 폼을 담는 얕은 래퍼. 바깥을 클릭하면 스스로 사라진다.
+function openFloatingPanel(clientX, clientY, buildFn) {
+  const panel = document.createElement('div');
+  panel.className = 'graph-floating-panel';
+  panel.style.left = `${clientX}px`;
+  panel.style.top = `${clientY}px`;
+  document.body.appendChild(panel);
+  buildFn(panel);
+  const outsideClick = (event) => {
+    if (panel.isConnected && !panel.contains(event.target)) {
+      panel.remove();
+      document.removeEventListener('click', outsideClick, true);
+    }
+  };
+  setTimeout(() => document.addEventListener('click', outsideClick, true), 0);
+  return panel;
+}
+
+// 그래프 배경(빈 공간) 우클릭 -> 개념/엔티티 생성 버튼 2개. orphan(carrier 논문
+// 없음)으로 만든 뒤, 우클릭했던 바로 그 자리에 나타나게 한다(연결은 이제 별도로
+// 노드를 2초 홀드+드래그해서 한다).
+let _pendingSpawnPosition = null;
+graphSvg.on('contextmenu', (event) => {
+  event.preventDefault();
+  const svgNode = graphSvg.node();
+  // clientX/Y(화면 좌표)를 지금 줌/팬 상태를 되돌린 그래프 로컬 좌표로 바꾼다 -
+  // 노드 x/y가 사는 좌표계와 같아야 스폰 위치로 그대로 쓸 수 있다.
+  const [localX, localY] = d3.zoomTransform(svgNode).invert(d3.pointer(event, svgNode));
+  const nearestNodeId = findNearestNodeId(localX, localY);
+  showContextMenu(event.clientX, event.clientY, [
+    { label: '개념 생성', onClick: () => openOrphanCreatePanel('concept', event.clientX, event.clientY, localX, localY, nearestNodeId) },
+    { label: '엔티티 생성', onClick: () => openOrphanCreatePanel('entity', event.clientX, event.clientY, localX, localY, nearestNodeId) },
+  ]);
+});
+
+function openOrphanCreatePanel(type, clientX, clientY, spawnX, spawnY, nearestNodeId) {
+  openFloatingPanel(clientX, clientY, (container) => {
+    openCreateNodePanel(container, {
+      fixedType: type,
+      orphan: true,
+      orphanAnchorId: nearestNodeId,
+      onCreated: async (result) => {
+        container.remove();
+        if (result?.type && result?.label) {
+          const id = `${result.type}:${result.label}`;
+          _pendingSpawnPosition = { id, x: spawnX, y: spawnY };
+          // 우클릭했을 때 가장 가까웠던 노드(타입 무관)를 기준점으로 기억해둔다 -
+          // 전체 그래프처럼 완전히 다른 레이아웃으로 바뀌어도 "그 노드 옆"이라는
+          // 상대적 위치는 그대로 유지된다(renderGraph 참고).
+          const anchorPos = nearestNodeId ? _nodePositions.get(nearestNodeId) : null;
+          if (anchorPos) {
+            _orphanAnchors.set(id, { anchorId: nearestNodeId, dx: spawnX - anchorPos.x, dy: spawnY - anchorPos.y });
+          }
+        }
+        await loadGraph(currentFocus, currentFocus !== null);
+      },
+    });
+  });
+}
+
+// 노트/개념/엔티티 md 본문에서 텍스트를 선택한 뒤 우클릭 -> 같은 2버튼 메뉴지만
+// 지금 보고 있는 노드에 자동으로 연결된다(orphan을 거치지 않음).
+document.getElementById('nodeModeBody').addEventListener('contextmenu', (event) => {
+  const selectedText = window.getSelection()?.toString().trim();
+  if (!selectedText || !currentOpenNode) return;
+
+  const carrierOptions = currentOpenNode.type === 'note'
+    ? [{ slug: currentOpenNode.slug, title: currentOpenNode.title }]
+    : (currentOpenNode.sources || []).map((s) => ({ slug: s.slug, title: s.title }));
+  if (!carrierOptions.length) return; // orphan concept/entity 안이면 자동 연결할 논문이 없다
+
+  event.preventDefault();
+  showContextMenu(event.clientX, event.clientY, [
+    { label: '개념 생성', onClick: () => openAutoConnectCreatePanel('concept', selectedText, carrierOptions, event.clientX, event.clientY) },
+    { label: '엔티티 생성', onClick: () => openAutoConnectCreatePanel('entity', selectedText, carrierOptions, event.clientX, event.clientY) },
+  ]);
+});
+
+function openAutoConnectCreatePanel(type, prefillLabel, carrierOptions, clientX, clientY) {
+  openFloatingPanel(clientX, clientY, (container) => {
+    const singleCarrier = carrierOptions.length === 1 ? carrierOptions[0] : undefined;
+    openCreateNodePanel(container, {
+      fixedType: type,
+      prefillLabel,
+      fixedCarrier: singleCarrier,
+      carrierOptions: singleCarrier ? undefined : carrierOptions,
+      needsConcepts: type === 'entity',
+      onCreated: async (result) => {
+        container.remove();
+        // 지금 보고 있던 노드(carrier) 근처에서 시작하게 한다 - 그래프 화면이 지금
+        // 안 보이는 상태(node-mode)라 클릭 좌표를 그래프 좌표로 쓸 수 없으므로,
+        // 대신 그 carrier의 마지막 위치를 기준으로 살짝 흩어(겹치지 않게) 배치한다.
+        const carrierId = currentOpenNodeGraphId();
+        const carrierPos = carrierId ? _nodePositions.get(carrierId) : null;
+        if (result?.type && result?.label && carrierPos) {
+          _pendingSpawnPosition = {
+            id: `${result.type}:${result.label}`,
+            x: carrierPos.x + (Math.random() - 0.5) * 50,
+            y: carrierPos.y + (Math.random() - 0.5) * 50,
+          };
+        }
+        await loadGraph(currentFocus, currentFocus !== null);
+      },
+    });
+  });
+}
 
 // 진입점 2: 그래프 화면 독립 버튼 - 타입/carrier 논문/concept 연결 전부 사용자가 고른다.
 document.getElementById('btnAddNode').addEventListener('click', async () => {
@@ -110,6 +303,13 @@ function renderGraph(data) {
   graphSvg.call(
     d3.zoom()
       .scaleExtent([0.3, 3])
+      // 노드(hitArea) 위에서 시작된 이벤트는 배경 팬으로 취급하지 않는다 - 이걸
+      // 안 하면 hitArea의 d3.drag()로 노드를 옮기는 동안 같은 이벤트가 부모인
+      // graphSvg까지 버블링돼 d3.zoom()도 동시에 팬을 시작해버려서, 노드를
+      // 드래그하면 배경도 같이 움직이는 것처럼 보인다. drag() 쪽에서
+      // stopPropagation()도 걸어두지만, event.target을 직접 확인하는 이 필터가
+      // 더 확실하다(d3-zoom 공식 문서가 권장하는 패턴).
+      .filter((event) => !event.target.closest('.node-hit-area'))
       // 팬 가능 범위를 캔버스 크기 기준으로 제한한다. 제한이 없으면 마우스처럼
       // 한 동작에 큰 픽셀 이동량이 들어오는 입력 장치에서 그래프 전체가 뷰포트
       // 밖으로 팬되어 "사라진 것처럼" 보이는 문제가 있었다(트랙패드는 이동
@@ -124,14 +324,55 @@ function renderGraph(data) {
     ? data.edges.filter((e) => visibleIds.has(e.source) && visibleIds.has(e.target))
     : data.edges;
 
-  const nodes = visibleNodes.map((n) => ({ ...n }));
-  const links = visibleEdges.map((e) => ({ ...e }));
+  const edgeNodeIds = new Set();
+  visibleEdges.forEach((e) => { edgeNodeIds.add(e.source); edgeNodeIds.add(e.target); });
 
+  // 이제 논문에 실제로 연결된(에지가 생긴) 노드는 더 이상 orphan이 아니니 앵커가
+  // 필요 없다 - forceLink가 알아서 그 논문 쪽으로 끌어당긴다.
+  for (const id of [..._orphanAnchors.keys()]) {
+    if (edgeNodeIds.has(id)) _orphanAnchors.delete(id);
+  }
+
+  // _orphanAnchors는 브라우저 메모리에만 있어 새로고침/서버 재시작으로 사라진다 -
+  // 그럴 땐 노드 파일에 저장해둔 anchor_id(생성 당시 가장 가까웠던 노드, app.py의
+  // create_orphan_node가 저장)로 앵커를 새로 만든다. 정확한 픽셀 오프셋은 세션마다
+  // 의미가 없으므로(화면 크기/줌 상태가 다를 수 있음) 작은 기본 오프셋만 준다 -
+  // 어차피 매 tick마다 계속 갱신되므로 시작값은 "겹치지만 않으면" 충분하다.
+  for (const n of visibleNodes) {
+    if (!edgeNodeIds.has(n.id) && !_orphanAnchors.has(n.id) && n.anchor_id) {
+      _orphanAnchors.set(n.id, { anchorId: n.anchor_id, dx: 20, dy: -14 });
+    }
+  }
+
+  // 방금 만든 노드(자동연결 포함)는 최초 한 프레임만 원하는 자리(우클릭 지점/carrier
+  // 근처)에서 시작하게 한다 - 에지 유무와 무관하게 적용(자동연결 노드는 이미 에지가
+  // 생겨 있어 아래 orphan 전용 처리 대상이 아니므로 이 초기 시드가 유일한 위치 힌트).
+  const nodes = visibleNodes.map((n) => {
+    if (_pendingSpawnPosition?.id === n.id) {
+      return { ...n, x: _pendingSpawnPosition.x, y: _pendingSpawnPosition.y };
+    }
+    if (!edgeNodeIds.has(n.id) && !_orphanAnchors.has(n.id)) {
+      // 앵커도 없고(우클릭 생성이 아니었거나 이미 지워짐) 방금 만든 것도 아닌
+      // 에지 없는 노드는, 마지막으로 알려진 자리에 그대로 고정해서 큰 그래프가
+      // 다시 자리잡는 동안 밀려나지 않게 한다.
+      const pos = _nodePositions.get(n.id);
+      if (pos) return { ...n, x: pos.x, y: pos.y, fx: pos.x, fy: pos.y };
+    }
+    return { ...n };
+  });
+  _pendingSpawnPosition = null;
+  const links = visibleEdges.map((e) => ({ ...e }));
+  const nodeById = new Map(nodes.map((n) => [n.id, n]));
+
+  // 앵커를 따라다니는 orphan은 위치가 이미 fx/fy로 완전히 결정돼 있어(위 tick
+  // 핸들러가 매번 다시 계산) 반발력/충돌 반경이 전혀 필요 없다 - 오히려 앵커
+  // 바로 옆(작은 고정 오프셋)에 딱 붙어서 일반 세기로 반발하면, 그 반발력이 정작
+  // 진짜 연결된 앵커 노드 자신을 원래 있어야 할 클러스터 밖으로 밀어내 버린다.
   simulation = d3.forceSimulation(nodes)
     .force('link', d3.forceLink(links).id((d) => d.id).distance(70).strength(0.4))
-    .force('charge', d3.forceManyBody().strength(-160))
+    .force('charge', d3.forceManyBody().strength((d) => (_orphanAnchors.has(d.id) ? 0 : -160)))
     .force('center', d3.forceCenter(width / 2, height / 2))
-    .force('collide', d3.forceCollide(20));
+    .force('collide', d3.forceCollide((d) => (_orphanAnchors.has(d.id) ? 0 : 20)));
 
   const link = g.append('g')
     .selectAll('line')
@@ -150,8 +391,37 @@ function renderGraph(data) {
       // 가능 - 아직 마이그레이션 안 된 노드는 흐리게 표시해 비활성 상태를 알린다.
       const unavailable = (d.type === 'concept' || d.type === 'entity') && !d.node_slug;
       return `node-${d.type}` + (unavailable ? ' node-disabled' : '');
-    })
-    .call(drag(simulation));
+    });
+
+  // 실제 눈에 보이는 원(6~8px)은 클릭/우클릭/드래그 시작점을 정확히 맞추기엔 너무
+  // 작다 - 특히 2초 홀드+드래그 연결 제스처는 애초에 그 작은 원 위에 포인터를 놓는
+  // 것부터 실패하기 쉽다. 그래서 보이지 않는(투명 채움) 더 큰 원을 눈에 보이는 원
+  // 위에 하나 더 겹쳐 그리고, 모든 포인터 상호작용(드래그/우클릭/클릭/hover)은
+  // 이 큰 원에만 건다 - 시각적으로는 원래 크기 그대로지만 실제로 반응하는 영역은
+  // 훨씬 넓어진다. fill="transparent"는 fill="none"과 달리 그 영역 전체가 여전히
+  // 클릭 가능하다(SVG pointer-events 기본값 visiblePainted 기준).
+  const hitArea = g.append('g')
+    .selectAll('circle')
+    .data(nodes)
+    .join('circle')
+    .attr('r', 16)
+    .attr('fill', 'transparent')
+    .attr('class', 'node-hit-area')
+    .call(drag(simulation, nodes, g, onConnectDrop, node));
+
+  // 노드 위 우클릭 -> 삭제 메뉴 1개. stopPropagation으로 배경 우클릭 핸들러(그래프
+  // 배경 우클릭 = 생성 메뉴)로 이벤트가 새지 않게 막는다. note/tag/attachment나
+  // 아직 node_store 파일이 없는(node_slug 없음) 노드는 삭제 대상이 아니라 메뉴 자체를
+  // 띄우지 않는다.
+  function handleNodeContextMenu(event, d) {
+    event.preventDefault();
+    event.stopPropagation();
+    if ((d.type !== 'concept' && d.type !== 'entity') || !d.node_slug) return;
+    showContextMenu(event.clientX, event.clientY, [
+      { label: '삭제', onClick: () => deleteNodeWithConfirm(d.type, d.node_slug, d.label) },
+    ]);
+  }
+  hitArea.on('contextmenu', handleNodeContextMenu);
 
   const label = g.append('g')
     .selectAll('text')
@@ -161,12 +431,62 @@ function renderGraph(data) {
     .attr('dx', 12)
     .attr('dy', 4)
     .text((d) => d.label);
+  // label(.graph-label)은 CSS에서 pointer-events: none이라 여기 handler를 달아도
+  // 실제로는 절대 발동하지 않는다 - 노드 상호작용은 hitArea 하나로 통일한다.
 
   // 호버한 노드와 직접 연결된 노드/에지만 원래대로 두고 나머지는 흐리게 만든다
-  // (Obsidian 그래프 뷰의 호버 강조와 동일한 방식).
-  node
+  // (Obsidian 그래프 뷰의 호버 강조와 동일한 방식). 강조 자체는 눈에 보이는 node/label에
+  // 적용하지만, hover가 시작되는 판정 영역은 더 넓은 hitArea 기준이다.
+  hitArea
     .on('mouseenter', (event, d) => highlightNode(d.id))
     .on('mouseleave', clearHighlight);
+
+  // 다른 논문/개념 노드로 드래그해 연결할 때(onConnectDrop), source/target이 어떤
+  // 조합이면 어느 API를 어떻게 호출해야 하는지 판단한다. 규칙: concept -> note,
+  // entity -> note, entity -> concept(그 concept의 sources 중에서 골라 paper_slug로
+  // 씀 - 1개면 바로, 2개 이상이면 드롭 지점에 논문 선택 메뉴)만 유효하고 나머지
+  // 조합(note가 source, concept<->concept, entity<->entity, concept -> entity 등)은
+  // 무시한다.
+  async function onConnectDrop(source, target, sourceEvent) {
+    if ((source.type !== 'concept' && source.type !== 'entity') || !source.node_slug) return;
+
+    if (target.type === 'note') {
+      await callLinkApi(source.type, source.node_slug, target.id, null);
+      return;
+    }
+    if (source.type === 'entity' && target.type === 'concept') {
+      const paperIds = [...new Set(
+        data.edges.filter((e) => e.type === 'link' && e.target === target.id).map((e) => e.source)
+      )].filter((id) => data.nodes.some((n) => n.id === id && n.type === 'note'));
+      if (!paperIds.length) return; // orphan concept(연결된 논문 없음) - 붙일 paper_slug가 없어 연결 불가
+
+      if (paperIds.length === 1) {
+        await callLinkApi('entity', source.node_slug, paperIds[0], target.label);
+        return;
+      }
+      const options = paperIds
+        .map((id) => data.nodes.find((n) => n.id === id))
+        .filter(Boolean);
+      showContextMenu(sourceEvent.clientX, sourceEvent.clientY, options.map((opt) => ({
+        label: opt.label,
+        onClick: () => callLinkApi('entity', source.node_slug, opt.id, target.label),
+      })));
+    }
+  }
+
+  async function callLinkApi(nodeType, nodeSlug, paperSlug, conceptLabel) {
+    try {
+      const res = await fetch(`/api/nodes/${nodeType}/${encodeURIComponent(nodeSlug)}/link`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paper_slug: paperSlug, concept_label: conceptLabel || null }),
+      });
+      if (!res.ok) throw new Error('link failed');
+      loadGraph(currentFocus, currentFocus !== null);
+    } catch {
+      alert('연결에 실패했습니다.');
+    }
+  }
 
   // d3.drag가 붙은 요소는 드래그 도중 마우스가 조금이라도 움직이면 그 뒤에 오는
   // 브라우저 native 'click' 이벤트를 d3-drag가 내부적으로 삼켜버린다(알려진
@@ -176,12 +496,13 @@ function renderGraph(data) {
   // 판정 기준이 흔들리지 않는다. Obsidian 그래프 뷰도 노드 클릭 시 같은 방식
   // (누른 위치 근처에서 뗐는지)으로 클릭과 드래그를 구분한다.
   let pointerDownAt = null;
-  node
+  hitArea
     .on('pointerdown', (event) => {
+      if (event.button !== 0) return; // 우클릭(2)/휠클릭(1)은 컨텍스트 메뉴 전용 - 클릭 열기 판정에서 제외
       pointerDownAt = { x: event.clientX, y: event.clientY, t: Date.now() };
     })
     .on('pointerup', (event, d) => {
-      if (!pointerDownAt) return;
+      if (!pointerDownAt || event.button !== 0) return;
       const moved = Math.hypot(event.clientX - pointerDownAt.x, event.clientY - pointerDownAt.y);
       const elapsed = Date.now() - pointerDownAt.t;
       pointerDownAt = null;
@@ -216,23 +537,115 @@ function renderGraph(data) {
   }
 
   simulation.on('tick', () => {
+    // orphan을 그 기준 노드의 "지금" 위치 + 생성 당시의 상대 오프셋으로 계속
+    // 따라다니게 한다 - 기준 노드 자체가 이번 렌더에서 어디로 자리잡든(포커스 뷰든
+    // 수백 개짜리 전체 그래프든) orphan은 항상 그 옆에 붙어있는다. 지금 사용자가
+    // 이 orphan 자체를 드래그 중이면 건드리지 않는다(안 그러면 드래그와 힘겨루기 함).
+    _orphanAnchors.forEach((anchor, orphanId) => {
+      const orphanNode = nodeById.get(orphanId);
+      if (!orphanNode || orphanNode._dragging) return;
+      const anchorNode = nodeById.get(anchor.anchorId);
+      if (!anchorNode) return;
+
+      // 기준 노드(다른 orphan일 수도 있음) 자체를 지금 사용자가 드래그하고
+      // 있으면, 이 팔로워를 실시간으로 같이 끌고 다니지 않는다 - 화면엔 그대로
+      // 있는 채로 "지금 화면 위치 기준" 상대 오프셋만 계속 갱신해둔다. 그래야
+      // 드래그가 끝난 뒤에도 갑자기 튀지 않고(오프셋이 이미 지금 위치에 맞게
+      // 갱신돼 있으므로) 자연스럽게 다시 따라가기 시작한다.
+      if (anchorNode._dragging) {
+        anchor.dx = orphanNode.x - anchorNode.x;
+        anchor.dy = orphanNode.y - anchorNode.y;
+        return;
+      }
+
+      orphanNode.x = orphanNode.fx = anchorNode.x + anchor.dx;
+      orphanNode.y = orphanNode.fy = anchorNode.y + anchor.dy;
+    });
+
     link
       .attr('x1', (d) => d.source.x).attr('y1', (d) => d.source.y)
       .attr('x2', (d) => d.target.x).attr('y2', (d) => d.target.y);
     node.attr('cx', (d) => d.x).attr('cy', (d) => d.y);
+    hitArea.attr('cx', (d) => d.x).attr('cy', (d) => d.y);
     label.attr('x', (d) => d.x).attr('y', (d) => d.y);
+    nodes.forEach((d) => _nodePositions.set(d.id, { x: d.x, y: d.y }));
   });
 }
 
-function drag(sim) {
+// 노드 하나를 2초 이상 누르고 있으면(미세하게 움직여도 취소되지 않음) 위치이동
+// 대신 "다른 노드로 드래그해 연결" 모드로 바뀐다: 임시 점선을 포인터를 따라
+// 그리다가, 다른 노드 위에서 놓으면 onConnectDrop(source, target, sourceEvent)을
+// 호출한다. 2초가 되기 전에 놓으면 지금까지와 똑같이 위치이동으로 끝난다.
+// d3.drag의 event.x/y는 이 노드가 속한 <g>(확대/축소 transform 적용된 그룹) 기준
+// 로컬 좌표라, nodes 배열의 x/y(시뮬레이션 좌표)와 그대로 비교/사용할 수 있다.
+const CONNECT_HOLD_MS = 2000;
+// 눈에 보이는 원 반지름(6~8px)이 아니라 실제 반응 영역인 hitArea 반지름(16)에
+// 맞춘다 - 드롭 판정도 클릭/드래그 시작 판정만큼 넉넉해야 한다.
+const CONNECT_HIT_RADIUS = 18;
+
+function drag(sim, nodes, g, onConnectDrop, visibleNode) {
   return d3.drag()
     .on('start', (event, d) => {
+      // hitArea에서 시작된 pointerdown이 부모인 graphSvg까지 그대로 버블링되면,
+      // 거기 걸려 있는 d3.zoom(배경 팬)의 리스너도 같은 이벤트를 받아 동시에
+      // 팬을 시작해버린다(노드를 드래그하는데 배경도 같이 움직이는 원인). 노드
+      // 위에서 시작된 드래그는 배경 팬으로 새지 않게 여기서 막는다.
+      event.sourceEvent.stopPropagation();
+      d._connecting = false;
+      d._dragging = true; // renderGraph()의 tick 핸들러가 이 노드의 앵커를 강제 적용하지 않게 막는 플래그
+      d._dragStartX = d.x;
+      d._dragStartY = d.y;
+      d._holdTimer = setTimeout(() => {
+        d._connecting = true;
+        // 2초가 실제로 지나서 연결 모드로 들어갔다는 걸 눈에 보이게 알려준다 -
+        // 안 그러면 지금 홀드가 인식됐는지 사용자가 전혀 알 길이 없다(점선
+        // 미리보기는 그 자리에서 움직이지 않으면 길이가 0이라 안 보임).
+        visibleNode.filter((n) => n === d).classed('node-connecting', true);
+        d._previewLine = g.append('line')
+          .attr('class', 'graph-connect-preview')
+          .attr('x1', d.x).attr('y1', d.y)
+          .attr('x2', d.x).attr('y2', d.y);
+      }, CONNECT_HOLD_MS);
+
       if (!event.active) sim.alphaTarget(0.3).restart();
       d.fx = d.x; d.fy = d.y;
     })
-    .on('drag', (event, d) => { d.fx = event.x; d.fy = event.y; })
+    .on('drag', (event, d) => {
+      if (d._connecting) {
+        d._previewLine.attr('x2', event.x).attr('y2', event.y);
+        return; // 연결 모드에서는 노드 자체 위치(fx/fy)를 옮기지 않는다
+      }
+      d.fx = event.x; d.fy = event.y;
+    })
     .on('end', (event, d) => {
+      clearTimeout(d._holdTimer);
+      d._dragging = false;
       if (!event.active) sim.alphaTarget(0);
+
+      if (d._connecting) {
+        d._connecting = false;
+        visibleNode.filter((n) => n === d).classed('node-connecting', false);
+        d._previewLine?.remove();
+        d._previewLine = null;
+        d.fx = null; d.fy = null;
+        const target = nodes.find((n) => n !== d && Math.hypot(n.x - event.x, n.y - event.y) < CONNECT_HIT_RADIUS);
+        if (target) onConnectDrop(d, target, event.sourceEvent);
+        return;
+      }
+
+      // 정말로(단순 클릭이 아니라) 옮겼는데 이 노드가 앵커 추적 중이었다면, 추적
+      // 자체는 유지하되 기준 노드로부터의 오프셋을 방금 옮긴 새 위치로 다시
+      // 계산한다 - 그래야 드래그로 옮긴 게 다음 tick에 예전 오프셋으로 도로
+      // 튕겨나가지 않는다. 추적을 아예 끊는 건 실제로 연결됐을 때만 한다
+      // (renderGraph 참고).
+      const anchor = _orphanAnchors.get(d.id);
+      if (anchor && Math.hypot(d.x - d._dragStartX, d.y - d._dragStartY) > 5) {
+        const anchorNode = nodes.find((n) => n.id === anchor.anchorId);
+        if (anchorNode) {
+          anchor.dx = d.x - anchorNode.x;
+          anchor.dy = d.y - anchorNode.y;
+        }
+      }
       d.fx = null; d.fy = null;
     });
 }
@@ -499,6 +912,45 @@ function renderMarkdown(markdown, links = {}) {
   return parts.join('\n');
 }
 
+// concept/entity 노드 삭제(+참조하던 논문 frontmatter 정리)를 공용화한 함수 -
+// 노드 뷰의 삭제 버튼과 그래프 노드 우클릭 삭제 메뉴가 같은 confirm() + DELETE
+// 호출 + 그래프 새로고침 로직을 공유한다. onBeforeReload는 노드 뷰가 열려 있을
+// 때만(그래프 화면에서 우클릭 삭제한 경우는 이미 그래프 화면이라 불필요) node-mode를
+// 벗어나기 위해 넘긴다.
+async function deleteNodeWithConfirm(type, slug, title, onBeforeReload) {
+  if (!confirm(`"${title}" 노드를 삭제할까요?\n이 노드를 참조하던 모든 논문에서도 연결이 제거됩니다. 되돌릴 수 없습니다.`)) {
+    return;
+  }
+
+  // concept이고 그 밑에 entity가 걸려있으면, "entity도 같이 지울지"를 한 번 더
+  // 물어본다 - 기본(취소)은 기존 동작 그대로(entity는 남기고 concept 연결만 해제).
+  let cascadeEntities = false;
+  if (type === 'concept') {
+    try {
+      const res = await fetch(`/api/nodes/concept/${encodeURIComponent(slug)}/linked-entities`);
+      if (res.ok) {
+        const { entities } = await res.json();
+        if (entities.length) {
+          cascadeEntities = confirm(
+            `이 개념에 연결된 엔티티가 ${entities.length}개 있습니다 (${entities.map((e) => e.label).join(', ')}).\n\n` +
+            `확인: 엔티티도 함께 삭제\n취소: 엔티티는 남기고 개념 연결만 해제`
+          );
+        }
+      }
+    } catch { /* 조회 실패해도 기본 동작(entity 유지)으로 계속 진행 */ }
+  }
+
+  try {
+    const qs = cascadeEntities ? '?cascade_entities=true' : '';
+    const res = await fetch(`/api/nodes/${type}/${encodeURIComponent(slug)}${qs}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error('delete failed');
+    onBeforeReload?.();
+    loadGraph(currentFocus, currentFocus !== null);
+  } catch {
+    alert('삭제에 실패했습니다.');
+  }
+}
+
 async function openNodeView(type, slug, fallbackLabel) {
   const bodyEl = document.getElementById('nodeModeBody');
   bodyEl.innerHTML = `<div class="node-view-title">${escapeHtml(fallbackLabel)}</div><p class="node-view-body">불러오는 중...</p>`;
@@ -513,6 +965,8 @@ async function openNodeView(type, slug, fallbackLabel) {
     bodyEl.innerHTML = `<div class="node-view-title">${escapeHtml(fallbackLabel)}</div><p class="node-view-body">노트를 불러오지 못했습니다.</p>`;
     return;
   }
+
+  currentOpenNode = { type, slug, title: data.title, sources: data.meta?.sources || [] };
 
   const metaChips = [];
   if (data.type === 'note') {
@@ -575,19 +1029,10 @@ async function openNodeView(type, slug, fallbackLabel) {
 
   // concept/entity 노드는 (LLM이 뽑았든 사용자가 직접 만들었든) 삭제 가능 - 노드
   // 파일뿐 아니라 이 노드를 참조하던 논문들의 frontmatter까지 서버가 같이 정리한다.
+  // 그래프에서 노드 우클릭 -> 삭제 메뉴도 같은 deleteNodeWithConfirm()을 쓴다.
   if (editable) {
-    document.getElementById('btnDeleteNode').addEventListener('click', async () => {
-      if (!confirm(`"${data.title}" 노드를 삭제할까요?\n이 노드를 참조하던 모든 논문에서도 연결이 제거됩니다. 되돌릴 수 없습니다.`)) {
-        return;
-      }
-      try {
-        const res = await fetch(`/api/nodes/${type}/${encodeURIComponent(slug)}`, { method: 'DELETE' });
-        if (!res.ok) throw new Error('delete failed');
-        document.body.classList.remove('node-mode');
-        loadGraph(currentFocus, currentFocus !== null);
-      } catch {
-        alert('삭제에 실패했습니다.');
-      }
+    document.getElementById('btnDeleteNode').addEventListener('click', () => {
+      deleteNodeWithConfirm(type, slug, data.title, () => document.body.classList.remove('node-mode'));
     });
   }
 
@@ -635,7 +1080,14 @@ async function openNodeView(type, slug, fallbackLabel) {
 //   config.carrierOptions  - fixedCarrier가 없을 때 고를 논문 목록 [{slug, title}]
 //   config.fixedConcept    - {label} | undefined(entity일 때 사용자가 고름)
 //   config.needsConcepts   - true면 concept 목록을 미리 fetch해 entity 연결 드롭다운에 씀
-//   config.onCreated       - 생성 성공 시 호출(그래프 새로고침 등)
+//   config.orphan          - true면 "연결할 논문" 행 자체를 숨기고 POST /api/nodes로 만든다
+//                             (그래프 배경 우클릭 진입점 - 나중에 드래그로 따로 연결)
+//   config.orphanAnchorId  - orphan일 때, 생성 당시 가장 가까웠던 노드의 id. 서버에
+//                             같이 저장해뒀다가 새로고침/재시작 후에도 그 근처에
+//                             나타나게 한다(renderGraph 참고)
+//   config.prefillLabel    - 이름 입력칸 초깃값(텍스트 선택 우클릭 진입점이 씀)
+//   config.onCreated       - 생성 성공 시 호출. {slug, label, type}을 받는다(orphan
+//                             생성 직후 그래프에서 하이라이트하려면 label/type이 필요).
 function openCreateNodePanel(container, config) {
   let concepts = [];
 
@@ -654,7 +1106,7 @@ function openCreateNodePanel(container, config) {
         ` : ''}
         <div class="create-node-row">
           <label>이름</label>
-          <input type="text" id="cnLabel" placeholder="예: Self-Attention">
+          <input type="text" id="cnLabel" placeholder="예: Self-Attention" value="${escapeHtml(config.prefillLabel || '')}">
         </div>
         ${type === 'concept' ? `
           <div class="create-node-row">
@@ -679,15 +1131,17 @@ function openCreateNodePanel(container, config) {
             }
           </div>
         `}
-        <div class="create-node-row">
-          <label>연결할 논문</label>
-          ${config.fixedCarrier
-            ? `<input type="text" value="${escapeHtml(config.fixedCarrier.title)}" disabled>`
-            : `<select id="cnCarrier">
-                ${config.carrierOptions.map((p) => `<option value="${escapeHtml(p.slug)}">${escapeHtml(p.title)}</option>`).join('')}
-              </select>`
-          }
-        </div>
+        ${!config.orphan ? `
+          <div class="create-node-row">
+            <label>연결할 논문</label>
+            ${config.fixedCarrier
+              ? `<input type="text" value="${escapeHtml(config.fixedCarrier.title)}" disabled>`
+              : `<select id="cnCarrier">
+                  ${config.carrierOptions.map((p) => `<option value="${escapeHtml(p.slug)}">${escapeHtml(p.title)}</option>`).join('')}
+                </select>`
+            }
+          </div>
+        ` : ''}
         <div class="create-node-actions">
           <button class="graph-btn" id="cnSubmit">생성</button>
           <button class="graph-btn" id="cnCancel">취소</button>
@@ -705,13 +1159,23 @@ function openCreateNodePanel(container, config) {
     const label = document.getElementById('cnLabel').value.trim();
     const statusEl = document.getElementById('cnStatus');
     if (!label) { statusEl.textContent = '이름을 입력하세요.'; return; }
-    const carrierSlug = config.fixedCarrier ? config.fixedCarrier.slug : document.getElementById('cnCarrier').value;
-    if (!carrierSlug) { statusEl.textContent = '연결할 논문을 선택하세요.'; return; }
+    const carrierSlug = config.orphan
+      ? null
+      : (config.fixedCarrier ? config.fixedCarrier.slug : document.getElementById('cnCarrier').value);
+    if (!config.orphan && !carrierSlug) { statusEl.textContent = '연결할 논문을 선택하세요.'; return; }
 
     statusEl.textContent = '생성 중...';
     try {
       let res;
-      if (type === 'concept') {
+      if (config.orphan) {
+        const body = { type, label, anchor_id: config.orphanAnchorId || null };
+        if (type === 'concept') body.category = document.getElementById('cnCategory').value;
+        res = await fetch('/api/nodes', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      } else if (type === 'concept') {
         const category = document.getElementById('cnCategory').value;
         res = await fetch(`/api/papers/${encodeURIComponent(carrierSlug)}/concepts`, {
           method: 'POST',
@@ -730,8 +1194,9 @@ function openCreateNodePanel(container, config) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.detail || '생성에 실패했습니다.');
       }
+      const result = await res.json().catch(() => ({}));
       container.innerHTML = '';
-      config.onCreated?.();
+      config.onCreated?.({ ...result, label, type });
     } catch (err) {
       statusEl.textContent = err.message || '생성에 실패했습니다.';
     }

@@ -257,6 +257,36 @@ def build_graph(vault_path: str, focus_slug: str | None = None, only_focus: bool
         for src in n["attachments"]:
             _add_attachment(n["slug"], "note", n["slug"], src)
 
+    # 아직 어느 논문에도 연결되지 않은(orphan) concept/entity 노드 파일도 그래프에
+    # 에지 없이 얹는다 - 사용자가 그래프 배경 우클릭으로 만든 뒤 나중에 드래그로
+    # 연결하기 전까지는 어떤 논문의 frontmatter에도 등장하지 않으므로 위 논문 순회
+    # 만으로는 나타나지 않는다. orphan_ids는 아래 only_focus 필터에서 예외로 쓴다 -
+    # 어떤 논문의 포커스 뷰를 보고 있든 orphan은 항상 보여야(연결할 대상을 찾아
+    # 드래그할 수 있어야) 하므로, 이 노드들만은 focus의 1~2촌 범위에 안 들어도 계속
+    # 남겨둔다.
+    # anchor_id(생성 당시 가장 가까웠던 다른 노드의 그래프 id)도 같이 실어보낸다 -
+    # 브라우저 새로고침/서버 재시작으로 프론트의 위치 캐시가 사라져도, 그래프를 다시
+    # 그릴 때 이 힌트로 그 노드 근처에 다시 나타나게 하기 위함(static/graph.js 참고).
+    orphan_ids: set[str] = set()
+    for store_node in concept_nodes_store:
+        node_id = f"concept:{store_node['display_label']}"
+        if not store_node.get("sources") and node_id not in seen_concept_nodes:
+            nodes.append({
+                "id": node_id, "label": store_node["display_label"], "type": "concept",
+                "node_slug": store_node["slug"], "anchor_id": store_node.get("anchor_id"),
+            })
+            seen_concept_nodes.add(node_id)
+            orphan_ids.add(node_id)
+    for store_node in entity_nodes_store:
+        node_id = f"entity:{store_node['display_label']}"
+        if not store_node.get("sources") and node_id not in seen_entity_nodes:
+            nodes.append({
+                "id": node_id, "label": store_node["display_label"], "type": "entity",
+                "node_slug": store_node["slug"], "anchor_id": store_node.get("anchor_id"),
+            })
+            seen_entity_nodes.add(node_id)
+            orphan_ids.add(node_id)
+
     # concept/entity 노드도 (node_store.py의 편집 UI로) 이미지를 첨부할 수 있다.
     # 이번 그래프에 실제로 등장하는(=최소 한 논문이 참조하는) concept/entity만
     # 대상으로, 그 물리 노드 파일 본문에서 첨부 이미지를 찾아 연결한다.
@@ -279,6 +309,11 @@ def build_graph(vault_path: str, focus_slug: str | None = None, only_focus: bool
                 keep_ids.add(e["target"])
             elif e["target"] == focus_slug:
                 keep_ids.add(e["source"])
+
+        # orphan은 이 focus와 1~2촌 범위인지와 무관하게 항상 남겨둔다 - 연결할 대상을
+        # 찾는 동안(드래그로 연결하기 전까지) 어떤 논문의 포커스 뷰를 보고 있어도
+        # 화면에서 사라지면 안 되기 때문.
+        keep_ids |= orphan_ids
 
         # concept에 딸린 entity는 논문과 2촌(논문 -> concept -> entity)이라 위
         # 1촌 필터에서 빠진다. focus의 concept 노드에 연결된 entity만 추가로

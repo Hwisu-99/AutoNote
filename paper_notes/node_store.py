@@ -499,7 +499,13 @@ def resolve_or_create_node(
 
 
 def create_node_manual(
-    store_root: str, node_type: str, label: str, source_slug: str, source_title: str, category: str | None = None
+    store_root: str,
+    node_type: str,
+    label: str,
+    source_slug: str | None,
+    source_title: str | None,
+    category: str | None = None,
+    anchor_id: str | None = None,
 ) -> str:
     """사용자가 그래프 화면에서 직접 만드는 concept/entity 노드. resolve_or_create_node()와
     달리 기존 노드와의 퍼지 매칭을 아예 거치지 않는다 - 사용자가 명시적으로 "이건 기존에
@@ -508,12 +514,22 @@ def create_node_manual(
 
     다만 slug(label을 정규화한 것)가 기존 파일과 완전히 같으면 조용히 덮어쓰지 않고
     막는다 - 그건 "비슷한 개념" 수준이 아니라 "같은 파일"이라, 그대로 진행하면 기존
-    파일의 frontmatter와 사용자가 이미 남긴 개인 메모까지 통째로 사라진다."""
+    파일의 frontmatter와 사용자가 이미 남긴 개인 메모까지 통째로 사라진다.
+
+    source_slug/source_title을 None으로 두면 sources가 빈 orphan 노드가 만들어진다 -
+    그래프 배경 우클릭으로 만드는 노드가 이 경로를 쓴다(어느 논문과 연결할지는 나중에
+    드래그로 정한다). carrier가 있는 기존 호출부(진입점 1/3)는 그대로 값을 넘긴다.
+
+    anchor_id는 orphan 생성 시 그래프에서 가장 가까웠던 다른 노드의 id(그래프 표시용,
+    예: "concept:Foo" 또는 논문 slug)를 그대로 저장해둔다 - 브라우저 메모리에만 있는
+    화면 좌표 캐시는 새로고침/서버 재시작으로 사라지므로, "이 노드는 원래 저 노드
+    근처에 있었다"는 최소한의 힌트를 파일에 남겨서 다음 세션에도 그 근처에 다시
+    나타나게 한다(graph_builder.py가 읽어서 그래프 응답에 실어준다)."""
     slug = _slugify(label)
     path = _node_dir(store_root, node_type) / f"{slug}.md"
     if path.is_file():
         raise FileExistsError(f"'{label}'과(와) 이름이 같은 노드가 이미 있습니다.")
-    return _create_node(store_root, node_type, label, [], source_slug, source_title, category)
+    return _create_node(store_root, node_type, label, [], source_slug, source_title, category, anchor_id=anchor_id)
 
 
 def delete_node(store_root: str, node_type: str, slug: str) -> dict:
@@ -571,11 +587,12 @@ def _create_node(
     node_type: str,
     label: str,
     aliases: list[str],
-    source_slug: str,
-    source_title: str,
+    source_slug: str | None,
+    source_title: str | None,
     category: str | None,
     description: str = "",
     note: str = "",
+    anchor_id: str | None = None,
 ) -> str:
     slug = _slugify(label)
     path = _node_dir(store_root, node_type) / f"{slug}.md"
@@ -586,13 +603,38 @@ def _create_node(
         "aliases": aliases,
         "description": description,
         "note": note,
-        "sources": [{"slug": source_slug, "title": source_title}],
+        "sources": [{"slug": source_slug, "title": source_title}] if source_slug else [],
+        "anchor_id": anchor_id,
         "created_at": _now_iso(),
     }
     if node_type == "concept":
         frontmatter["category"] = category
     _write_node_file(path, frontmatter, user_section="")
     return slug
+
+
+def link_node_to_paper(store_root: str, node_type: str, node_slug: str, paper_slug: str, paper_title: str) -> None:
+    """이미 존재하는(orphan이든 아니든) concept/entity 노드 파일의 sources[]에 논문을
+    하나 추가한다. _update_node()가 하는 일 중 sources 갱신 부분만 떼어낸 것과 같다 -
+    라벨/alias 재매칭은 하지 않는다(호출부가 이미 정확히 어느 노드인지 slug로 알고
+    있으므로 다시 퍼지 매칭할 이유가 없다). 그래프에서 노드를 다른 노드로 드래그해
+    연결하는 제스처가 이 함수를 쓴다. 논문 쪽 frontmatter(concepts/entities 목록)는
+    별도로 obsidian_writer.add_concept_to_note()/add_entity_to_note()가 갱신한다 -
+    두 쪽 다 갱신해야 그래프가 양방향에서 일관되게 보인다."""
+    path = _node_dir(store_root, node_type) / f"{node_slug}.md"
+    if not path.is_file():
+        raise FileNotFoundError(f"노드 파일을 찾을 수 없습니다: {node_slug}")
+    frontmatter = _read_frontmatter(path)
+    sources = frontmatter.get("sources") or []
+    if not any(s.get("slug") == paper_slug for s in sources):
+        sources.append({"slug": paper_slug, "title": paper_title})
+    frontmatter["sources"] = sources
+    # 실제로 논문에 연결됐으니 이제 orphan이 아니다 - 그래프가 더 이상 anchor_id를
+    # 안 쓰긴 하지만(sources가 있으면 무시함), frontmatter에 죽은 값으로 계속
+    # 남겨두지 않기 위해 지운다.
+    frontmatter["anchor_id"] = None
+    user_section = _extract_user_section(path)
+    _write_node_file(path, frontmatter, user_section)
 
 
 def _update_node(path: Path, label: str, aliases: list[str], source_slug: str, source_title: str) -> None:
