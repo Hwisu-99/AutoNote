@@ -6,6 +6,8 @@ const graphSvg = d3.select('#graphSvg');
 const graphTitleEl = document.getElementById('graphTitle');
 const btnFullGraph = document.getElementById('btnFullGraph');
 const toggleTagsInput = document.getElementById('toggleTags');
+const toggleEntitiesInput = document.getElementById('toggleEntities');
+const toggleAttachmentsInput = document.getElementById('toggleAttachments');
 const toggleExpandInput = document.getElementById('toggleExpand');
 const graphColumnEl = document.querySelector('.graph-column');
 const graphPanelEl = document.getElementById('graphPanel');
@@ -13,6 +15,8 @@ let simulation = null;
 let currentFocus = null;
 let currentGraphData = null;
 let hideTagNodes = !toggleTagsInput.checked;
+let hideEntityNodes = !toggleEntitiesInput.checked;
+let hideAttachmentNodes = !toggleAttachmentsInput.checked;
 // openNodeView()가 마지막으로 연 노드를 기억해둔다 - 노트 본문에서 텍스트를 선택해
 // 우클릭으로 생성할 때 "어느 논문/개념/엔티티를 보고 있었는지"를 알아야 자동 연결할
 // 수 있다.
@@ -237,6 +241,16 @@ toggleTagsInput.addEventListener('change', () => {
   if (currentGraphData) renderGraph(currentGraphData);
 });
 
+toggleEntitiesInput.addEventListener('change', () => {
+  hideEntityNodes = !toggleEntitiesInput.checked;
+  if (currentGraphData) renderGraph(currentGraphData);
+});
+
+toggleAttachmentsInput.addEventListener('change', () => {
+  hideAttachmentNodes = !toggleAttachmentsInput.checked;
+  if (currentGraphData) renderGraph(currentGraphData);
+});
+
 // 확대 시 사이드바/업로드 영역을 숨기고, 그래프 박스가 그 세로 공간을 이어받도록
 // 높이를 고정값으로 잡아준다. 요약 카드가 떠 있으면 "그래프 박스 + 요약 카드"가
 // 차지하던 높이 그대로, 요약 카드가 없으면(전체 그래프 보기 등) 화면 아래쪽
@@ -318,11 +332,14 @@ function renderGraph(data) {
       .on('zoom', (event) => g.attr('transform', event.transform))
   );
 
-  const visibleNodes = hideTagNodes ? data.nodes.filter((n) => n.type !== 'tag') : data.nodes;
+  const visibleNodes = data.nodes.filter((n) => {
+    if (hideTagNodes && n.type === 'tag') return false;
+    if (hideEntityNodes && n.type === 'entity') return false;
+    if (hideAttachmentNodes && n.type === 'attachment') return false;
+    return true;
+  });
   const visibleIds = new Set(visibleNodes.map((n) => n.id));
-  const visibleEdges = hideTagNodes
-    ? data.edges.filter((e) => visibleIds.has(e.source) && visibleIds.has(e.target))
-    : data.edges;
+  const visibleEdges = data.edges.filter((e) => visibleIds.has(e.source) && visibleIds.has(e.target));
 
   const edgeNodeIds = new Set();
   visibleEdges.forEach((e) => { edgeNodeIds.add(e.source); edgeNodeIds.add(e.target); });
