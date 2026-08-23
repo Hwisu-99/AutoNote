@@ -60,6 +60,18 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 # 디렉터리를 대신 넘겨 격리한다), 실제 호출부(app.py 등)에서 이 상수를 쓴다.
 NODE_STORE_ROOT = str(Path(__file__).resolve().parent.parent)
 
+
+class DuplicateNodeError(Exception):
+    """create_node_manual()이 사용자가 입력한 이름과 비슷한(정규화 완전일치·alias·
+    MinHash 유사도) 노드가 이미 있다고 판단했을 때 던진다. slug가 완전히 같아서
+    막는 FileExistsError와 달리, 이건 "그래도 새로 만들기"로 사용자가 우회할 수
+    있다(force=True) - 퍼지 매칭은 오탐(비슷해 보이지만 실제론 다른 개념) 가능성이
+    있어 무조건 막기보다는 사용자에게 물어보는 쪽이 안전하다."""
+
+    def __init__(self, match: dict) -> None:
+        self.match = match
+        super().__init__(f"'{match['display_label']}'과(와) 비슷한 노드가 이미 있습니다.")
+
 _AUTO_MARKER = (
     "<!-- auto-generated: 이 아래는 논문을 처리할 때마다 파이프라인이 자동으로 "
     "다시 씁니다. 직접 수정하지 마세요. -->"
@@ -506,15 +518,22 @@ def create_node_manual(
     source_title: str | None,
     category: str | None = None,
     anchor_id: str | None = None,
+    force: bool = False,
 ) -> str:
-    """사용자가 그래프 화면에서 직접 만드는 concept/entity 노드. resolve_or_create_node()와
-    달리 기존 노드와의 퍼지 매칭을 아예 거치지 않는다 - 사용자가 명시적으로 "이건 기존에
-    없던 개념/용어다"라고 판단해서 만드는 것이므로, 굳이 비슷한 기존 노드를 찾아 거기
-    병합할 필요가 없다(오히려 사용자 의도와 다르게 엉뚱한 노드에 붙을 위험).
+    """사용자가 그래프 화면에서 직접 만드는 concept/entity 노드.
 
-    다만 slug(label을 정규화한 것)가 기존 파일과 완전히 같으면 조용히 덮어쓰지 않고
-    막는다 - 그건 "비슷한 개념" 수준이 아니라 "같은 파일"이라, 그대로 진행하면 기존
-    파일의 frontmatter와 사용자가 이미 남긴 개인 메모까지 통째로 사라진다.
+    slug(label을 정규화한 것)가 기존 파일과 완전히 같으면 force와 무관하게 항상
+    막는다 - 그건 "비슷한 개념" 수준이 아니라 "같은 파일"이라, 그대로 진행하면
+    기존 파일의 frontmatter와 사용자가 이미 남긴 개인 메모까지 통째로 사라진다.
+
+    force=False(기본값)면 정확 일치 다음으로, resolve_or_create_node()가 쓰는 것과
+    같은 기준(정규화 완전일치·alias·MinHash 유사도, find_node_fuzzy)으로 비슷한
+    기존 노드가 있는지도 확인해 있으면 DuplicateNodeError를 던진다 - 사용자가 이미
+    있는 개념/용어를 모르고 다시 만드는 걸 막기 위함(직접 만들 때는 resolve_or_create_node()
+    와 달리 자동 병합은 하지 않는다 - 사용자 의도와 다르게 엉뚱한 노드에 조용히
+    합쳐지면 안 되므로, 호출부가 사용자에게 확인받은 뒤 force=True로 다시 부르는
+    구조). force=True면 이 퍼지 매칭 확인을 건너뛰고 새로 만든다("그래도 새로
+    만들기"를 사용자가 명시적으로 선택한 경우).
 
     source_slug/source_title을 None으로 두면 sources가 빈 orphan 노드가 만들어진다 -
     그래프 배경 우클릭으로 만드는 노드가 이 경로를 쓴다(어느 논문과 연결할지는 나중에
@@ -529,6 +548,14 @@ def create_node_manual(
     path = _node_dir(store_root, node_type) / f"{slug}.md"
     if path.is_file():
         raise FileExistsError(f"'{label}'과(와) 이름이 같은 노드가 이미 있습니다.")
+
+    if not force:
+        nodes = list_nodes(store_root, node_type)
+        idx = node_index(store_root, node_type)
+        match = find_node_fuzzy(nodes, label, [], idx)
+        if match:
+            raise DuplicateNodeError(match)
+
     return _create_node(store_root, node_type, label, [], source_slug, source_title, category, anchor_id=anchor_id)
 
 

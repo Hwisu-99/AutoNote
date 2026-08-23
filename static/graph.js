@@ -1072,6 +1072,42 @@ async function openNodeView(type, slug, fallbackLabel) {
   renderMermaidBlocks();
 }
 
+// concept/entity 생성 POST 하나를 공용으로 처리한다 - 서버가 "완전히 같은 이름"이
+// 아니라 "비슷한 노드가 이미 있음"(409, detail.type === 'similar_exists')으로
+// 응답하면, 사용자에게 그대로 새로 만들지 물어보고(confirm) 그렇다면 같은 요청을
+// force:true로 다시 보낸다. 사용자가 취소하면 에러가 아니라 null을 반환한다(호출부가
+// "만들지 않음"으로 조용히 처리하도록) - 기존 노드를 연결하고 싶으면 그 노드를 직접
+// 찾아 드래그로 연결하면 된다는 안내만 남긴다.
+async function postWithDuplicateCheck(url, body) {
+  let res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    if (err.detail && typeof err.detail === 'object' && err.detail.type === 'similar_exists') {
+      const proceed = confirm(
+        `이미 비슷한 노드가 있습니다: "${err.detail.existing.label}"\n\n` +
+        `확인: 그래도 새로 만들기\n취소: 만들지 않기 (기존 노드를 찾아 드래그로 연결해보세요)`
+      );
+      if (!proceed) return null;
+      res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...body, force: true }),
+      });
+      if (!res.ok) {
+        const err2 = await res.json().catch(() => ({}));
+        throw new Error(typeof err2.detail === 'string' ? err2.detail : '생성에 실패했습니다.');
+      }
+    } else {
+      throw new Error(typeof err.detail === 'string' ? err.detail : '생성에 실패했습니다.');
+    }
+  }
+  return res.json().catch(() => ({}));
+}
+
 // 사용자가 직접 concept/entity 노드를 만드는 인라인 패널(모달 아님) - 트리거
 // 버튼 바로 아래 컨테이너에 폼을 그려 넣는다. 세 진입점(논문 뷰/concept 뷰/그래프
 // 독립 버튼)이 이 함수 하나를 서로 다른 config로 재사용한다.
@@ -1164,37 +1200,24 @@ function openCreateNodePanel(container, config) {
       : (config.fixedCarrier ? config.fixedCarrier.slug : document.getElementById('cnCarrier').value);
     if (!config.orphan && !carrierSlug) { statusEl.textContent = '연결할 논문을 선택하세요.'; return; }
 
+    let url, body;
+    if (config.orphan) {
+      body = { type, label, anchor_id: config.orphanAnchorId || null };
+      if (type === 'concept') body.category = document.getElementById('cnCategory').value;
+      url = '/api/nodes';
+    } else if (type === 'concept') {
+      body = { label, category: document.getElementById('cnCategory').value };
+      url = `/api/papers/${encodeURIComponent(carrierSlug)}/concepts`;
+    } else {
+      const concept = config.fixedConcept ? config.fixedConcept.label : (document.getElementById('cnConcept').value || null);
+      body = { label, concept };
+      url = `/api/papers/${encodeURIComponent(carrierSlug)}/entities`;
+    }
+
     statusEl.textContent = '생성 중...';
     try {
-      let res;
-      if (config.orphan) {
-        const body = { type, label, anchor_id: config.orphanAnchorId || null };
-        if (type === 'concept') body.category = document.getElementById('cnCategory').value;
-        res = await fetch('/api/nodes', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-      } else if (type === 'concept') {
-        const category = document.getElementById('cnCategory').value;
-        res = await fetch(`/api/papers/${encodeURIComponent(carrierSlug)}/concepts`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ label, category }),
-        });
-      } else {
-        const concept = config.fixedConcept ? config.fixedConcept.label : (document.getElementById('cnConcept').value || null);
-        res = await fetch(`/api/papers/${encodeURIComponent(carrierSlug)}/entities`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ label, concept }),
-        });
-      }
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || '생성에 실패했습니다.');
-      }
-      const result = await res.json().catch(() => ({}));
+      const result = await postWithDuplicateCheck(url, body);
+      if (!result) { statusEl.textContent = '만들지 않았습니다.'; return; } // 중복 확인에서 사용자가 취소
       container.innerHTML = '';
       config.onCreated?.({ ...result, label, type });
     } catch (err) {

@@ -25,7 +25,7 @@ _NUM_PERM = 64
 _SHINGLE_SIZE = 3
 _MERSENNE_PRIME = (1 << 61) - 1
 _MAX_HASH = (1 << 32) - 1
-_DEFAULT_THRESHOLD = 0.82
+_DEFAULT_THRESHOLD = 0.72
 
 _NUMERIC_RE = re.compile(r"\d+")
 
@@ -104,23 +104,51 @@ def _numeric_tokens_differ(a: str, b: str) -> bool:
     return nums_a != nums_b and bool(nums_a or nums_b)
 
 
-def labels_match(label_a: str, label_b: str, threshold: float = _DEFAULT_THRESHOLD, num_perm: int = _NUM_PERM) -> bool:
-    """두 라벨이 같은 개념을 가리키는지 단건으로 판단한다 - dedupe_labels()가
-    라벨 집합 전체를 배치로 클러스터링할 때 쓰는 것과 동일한 기준(정규화 완전일치,
-    또는 숫자 토큰이 같으면서 3-gram MinHash 자카드 유사도가 threshold 이상)을
-    라벨 두 개짜리 비교에도 쓸 수 있게 뽑아낸 함수다. node_store.py처럼 논문이
-    들어올 때마다 기존 노드 하나하나와 즉시 비교해야 해서 dedupe_labels()의 배치
-    클러스터링을 매번 다시 돌릴 수 없는 경우에 쓴다 - 이렇게 같은 판정 함수를
-    공유해야, 그래프 뷰(dedupe_labels 기반)와 노드 파일(node_store 기반)이 같은
-    개념을 서로 다르게 판단해 어긋나는 문제가 생기지 않는다."""
-    key_a, key_b = normalize_label(label_a), normalize_label(label_b)
+def _is_suffix_variant(key_a: str, key_b: str) -> bool:
+    """한쪽이 다른 쪽 뒤에 글자 하나만 붙은 변형인지("mla"/"mlas") 접두사 관계로
+    확인한다. 3-gram 자카드는 특히 짧은 라벨(약어 등)에서 조각 수 자체가 몇 개
+    안 되다 보니 이런 한 글자 차이의 비중이 과도하게 커져서(예: "mla"→{"mla"},
+    "mlas"→{"mla","las"}, 자카드 0.5로 threshold 0.82 미달) 실제로는 같은 개념인
+    변형을 놓치기 쉽다. 접두사 관계만 보고 판단하므로 "GQA"/"MQA"처럼 중간 글자가
+    달라 실제로는 서로 다른 개념인 짧은 약어까지 잘못 같은 것으로 묶이는 일은
+    없다(둘 다 서로의 접두사가 아니므로)."""
+    shorter, longer = (key_a, key_b) if len(key_a) <= len(key_b) else (key_b, key_a)
+    return len(longer) - len(shorter) <= 1 and bool(shorter) and longer.startswith(shorter)
+
+
+def _keys_match(
+    key_a: str,
+    key_b: str,
+    threshold: float,
+    sig_a: tuple[int, ...] | None = None,
+    sig_b: tuple[int, ...] | None = None,
+    num_perm: int = _NUM_PERM,
+) -> bool:
+    """정규화된 키(normalize_label 결과) 두 개가 같은 개념을 가리키는지 판단하는
+    핵심 로직 - labels_match()와 dedupe_labels()가 공유한다(둘이 각자 판단하면
+    그래프 뷰와 노드 파일이 같은 개념을 서로 다르게 취급해 어긋날 수 있음).
+    시그니처(sig_a/sig_b)를 미리 계산해 넘기면 재사용하고, 없으면 새로 계산한다
+    (dedupe_labels()의 배치 비교는 미리 한 번씩만 계산해 재사용하기 위함)."""
     if key_a == key_b:
         return True
     if not key_a or not key_b or _numeric_tokens_differ(key_a, key_b):
         return False
-    sig_a = _cached_signature(key_a, num_perm)
-    sig_b = _cached_signature(key_b, num_perm)
+    if _is_suffix_variant(key_a, key_b):
+        return True
+    if sig_a is None:
+        sig_a = _cached_signature(key_a, num_perm)
+    if sig_b is None:
+        sig_b = _cached_signature(key_b, num_perm)
     return jaccard_estimate(sig_a, sig_b) >= threshold
+
+
+def labels_match(label_a: str, label_b: str, threshold: float = _DEFAULT_THRESHOLD, num_perm: int = _NUM_PERM) -> bool:
+    """두 라벨이 같은 개념을 가리키는지 단건으로 판단한다 - dedupe_labels()가
+    라벨 집합 전체를 배치로 클러스터링할 때 쓰는 것과 동일한 기준(_keys_match)을
+    라벨 두 개짜리 비교에도 쓸 수 있게 뽑아낸 함수다. node_store.py처럼 논문이
+    들어올 때마다 기존 노드 하나하나와 즉시 비교해야 해서 dedupe_labels()의 배치
+    클러스터링을 매번 다시 돌릴 수 없는 경우에 쓴다."""
+    return _keys_match(normalize_label(label_a), normalize_label(label_b), threshold, num_perm=num_perm)
 
 
 class _UnionFind:
@@ -179,9 +207,7 @@ def dedupe_labels(
     uf = _UnionFind(keys)
     for i, key_a in enumerate(keys):
         for key_b in keys[i + 1 :]:
-            if _numeric_tokens_differ(key_a, key_b):
-                continue
-            if jaccard_estimate(signatures[key_a], signatures[key_b]) >= threshold:
+            if _keys_match(key_a, key_b, threshold, signatures[key_a], signatures[key_b], num_perm):
                 uf.union(key_a, key_b)
 
     # alias 기반 병합: alias 텍스트 자체는 노드가 아니라 두 라벨을 잇는 매개일

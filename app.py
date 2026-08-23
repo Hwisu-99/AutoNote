@@ -24,6 +24,7 @@ from paper_notes.dedup import normalize_label
 from paper_notes.node_store import (
     IMAGE_EXTENSIONS,
     NODE_STORE_ROOT,
+    DuplicateNodeError,
     create_node_manual,
     delete_node,
     find_node_fuzzy,
@@ -355,16 +356,33 @@ async def get_concepts():
     return {"concepts": [{"slug": n["slug"], "label": n["display_label"]} for n in nodes]}
 
 
+def _duplicate_node_http_exception(exc: DuplicateNodeError) -> HTTPException:
+    """create_node_manual()이 퍼지 매칭으로 비슷한 기존 노드를 찾았을 때(force=False)
+    던지는 DuplicateNodeError를, 프론트가 "그래도 새로 만들기" 선택지를 보여줄 수
+    있도록 detail을 문자열이 아니라 구조화된 객체로 담아 409를 반환한다. 사용자가
+    그래도 만들기로 하면 프론트는 같은 요청을 force=true로 다시 보낸다."""
+    return HTTPException(
+        status_code=409,
+        detail={
+            "type": "similar_exists",
+            "message": str(exc),
+            "existing": {"slug": exc.match["slug"], "label": exc.match["display_label"]},
+        },
+    )
+
+
 class _AddConceptPayload(BaseModel):
     label: str
     category: str
+    force: bool = False
 
 
 @app.post("/api/papers/{slug}/concepts")
 async def add_concept(slug: str, payload: _AddConceptPayload):
-    """사용자가 그래프/논문 화면에서 직접 concept을 추가한다. LLM 추출 파이프라인과
-    달리 기존 노드와의 퍼지 매칭 없이 바로 새 노드 파일을 만들고(같은 이름이 이미
-    있으면 409), 그 논문의 frontmatter concepts 목록에도 추가해 그래프에 바로
+    """사용자가 그래프/논문 화면에서 직접 concept을 추가한다. 이름이 완전히 같은
+    노드가 이미 있으면 항상 409, 비슷한(퍼지 매칭) 노드가 있으면 force=false일 때만
+    409(프론트가 "그래도 새로 만들지" 물어봄) - force=true면 그 확인을 건너뛰고
+    만든다. 성공하면 그 논문의 frontmatter concepts 목록에도 추가해 그래프에 바로
     나타나게 한다."""
     label = payload.label.strip()
     if not label:
@@ -381,7 +399,11 @@ async def add_concept(slug: str, payload: _AddConceptPayload):
     # 하고, 이미 논문 frontmatter에 concept을 추가해버린 뒤라면(반대 순서) 노드 파일
     # 생성은 실패했는데 frontmatter만 바뀌어 있는 상태가 남는다.
     try:
-        node_slug = create_node_manual(NODE_STORE_ROOT, "concept", label, slug, title, category=payload.category)
+        node_slug = create_node_manual(
+            NODE_STORE_ROOT, "concept", label, slug, title, category=payload.category, force=payload.force
+        )
+    except DuplicateNodeError as exc:
+        raise _duplicate_node_http_exception(exc) from exc
     except FileExistsError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -392,13 +414,14 @@ async def add_concept(slug: str, payload: _AddConceptPayload):
 class _AddEntityPayload(BaseModel):
     label: str
     concept: str | None = None
+    force: bool = False
 
 
 @app.post("/api/papers/{slug}/entities")
 async def add_entity(slug: str, payload: _AddEntityPayload):
     """사용자가 그래프/논문/concept 화면에서 직접 entity를 추가한다. concept을 주면
     그래프에서 concept -> entity로 연결되고, 없으면 이 논문에 직접 연결된다(기존
-    LLM 추출 entity와 그래프 상 동일한 동작)."""
+    LLM 추출 entity와 그래프 상 동일한 동작). force 처리는 add_concept()와 같다."""
     label = payload.label.strip()
     if not label:
         raise HTTPException(status_code=400, detail="엔티티 이름을 입력하세요.")
@@ -411,7 +434,9 @@ async def add_entity(slug: str, payload: _AddEntityPayload):
     title = frontmatter.get("title") or slug
 
     try:
-        node_slug = create_node_manual(NODE_STORE_ROOT, "entity", label, slug, title)
+        node_slug = create_node_manual(NODE_STORE_ROOT, "entity", label, slug, title, force=payload.force)
+    except DuplicateNodeError as exc:
+        raise _duplicate_node_http_exception(exc) from exc
     except FileExistsError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -424,6 +449,7 @@ class _CreateOrphanNodePayload(BaseModel):
     label: str
     category: str | None = None
     anchor_id: str | None = None
+    force: bool = False
 
 
 @app.post("/api/nodes")
@@ -434,7 +460,11 @@ async def create_orphan_node(payload: _CreateOrphanNodePayload):
 
     anchor_id는 생성 당시 그래프에서 가장 가까웠던 다른 노드의 id를 그대로 저장해둔다 -
     브라우저 새로고침이나 서버 재시작으로 프론트의 위치 캐시가 사라져도, 그래프를 다시
-    그릴 때 이 힌트로 그 노드 근처에 나타나게 하기 위함(graph_builder.py 참고)."""
+    그릴 때 이 힌트로 그 노드 근처에 나타나게 하기 위함(graph_builder.py 참고).
+
+    force 처리는 add_concept()/add_entity()와 같다 - 비슷한 노드가 이미 있으면
+    기본적으로 409(similar_exists)를 반환해 프론트가 확인창을 띄우게 하고,
+    force=true면 그 확인을 건너뛴다."""
     if payload.type not in ("concept", "entity"):
         raise HTTPException(status_code=400, detail="type은 concept 또는 entity여야 합니다.")
     label = payload.label.strip()
@@ -443,8 +473,11 @@ async def create_orphan_node(payload: _CreateOrphanNodePayload):
 
     try:
         node_slug = create_node_manual(
-            NODE_STORE_ROOT, payload.type, label, None, None, category=payload.category, anchor_id=payload.anchor_id
+            NODE_STORE_ROOT, payload.type, label, None, None,
+            category=payload.category, anchor_id=payload.anchor_id, force=payload.force,
         )
+    except DuplicateNodeError as exc:
+        raise _duplicate_node_http_exception(exc) from exc
     except FileExistsError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"slug": node_slug}
