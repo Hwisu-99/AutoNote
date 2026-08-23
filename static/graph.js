@@ -974,7 +974,6 @@ async function openNodeView(type, slug, fallbackLabel) {
     if (data.meta.tags?.length) metaChips.push(`<span>${escapeHtml(data.meta.tags.map((t) => '#' + t).join(' '))}</span>`);
   } else {
     if (data.meta.category) metaChips.push(`<span>카테고리: ${escapeHtml(data.meta.category)}</span>`);
-    if (data.meta.aliases?.length) metaChips.push(`<span>다른 표기: ${escapeHtml(data.meta.aliases.join(', '))}</span>`);
     if (data.meta.sources?.length) metaChips.push(`<span>등장 논문 ${data.meta.sources.length}편</span>`);
   }
 
@@ -998,6 +997,14 @@ async function openNodeView(type, slug, fallbackLabel) {
   bodyEl.innerHTML = `
     <div class="node-view-title">${escapeHtml(data.title)}</div>
     <div class="node-view-meta">${metaChips.join('')}</div>
+    ${editable ? `
+      <div class="node-view-aliases">
+        <span class="node-view-aliases-label">다른 표기</span>
+        <span id="nodeAliasChips">${renderAliasChips(data.meta.aliases || [])}</span>
+        <button class="graph-btn" id="btnAddAlias">+ 별칭</button>
+      </div>
+      <div id="addAliasContainer"></div>
+    ` : ''}
     ${data.type === 'note' ? `
       <div class="node-view-side-panel">
         <button class="graph-btn" id="btnAddNodeToNote">+ 개념/엔티티 추가</button>
@@ -1026,6 +1033,7 @@ async function openNodeView(type, slug, fallbackLabel) {
   `;
 
   if (editable) wireUserNotesEditing(type, slug, userMarkdown, data.links);
+  if (editable) wireAliasEditing(type, slug);
 
   // concept/entity 노드는 (LLM이 뽑았든 사용자가 직접 만들었든) 삭제 가능 - 노드
   // 파일뿐 아니라 이 노드를 참조하던 논문들의 frontmatter까지 서버가 같이 정리한다.
@@ -1070,6 +1078,81 @@ async function openNodeView(type, slug, fallbackLabel) {
   }
 
   renderMermaidBlocks();
+}
+
+function renderAliasChips(aliases) {
+  if (!aliases.length) return '<span class="node-view-usernotes-empty">없음</span>';
+  return aliases
+    .map((a) => `<span class="alias-chip">${escapeHtml(a)}<button type="button" class="alias-chip-remove" data-alias="${escapeHtml(a)}" title="별칭 삭제">×</button></span>`)
+    .join('');
+}
+
+// LLM이 판단한 별칭이 항상 맞는 건 아니다(놓친 표기가 있거나, 반대로 실제로는
+// 다른 개념인데 같다고 오판했을 수도 있음) - 사용자가 노드 화면에서 직접 별칭을
+// 추가/삭제할 수 있게 한다. 서버가 이미 다른 노드가 쓰는 표기(alias_taken)를
+// 걸러주므로, 여기서는 그 응답을 사용자에게 그대로 보여주기만 하면 된다.
+function wireAliasEditing(type, slug) {
+  const chipsEl = document.getElementById('nodeAliasChips');
+  const addContainer = document.getElementById('addAliasContainer');
+
+  chipsEl.addEventListener('click', async (event) => {
+    const btn = event.target.closest('.alias-chip-remove');
+    if (!btn) return;
+    try {
+      const res = await fetch(`/api/nodes/${type}/${encodeURIComponent(slug)}/aliases`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ alias: btn.dataset.alias }),
+      });
+      if (!res.ok) throw new Error();
+      const { aliases } = await res.json();
+      chipsEl.innerHTML = renderAliasChips(aliases);
+    } catch {
+      alert('별칭 삭제에 실패했습니다.');
+    }
+  });
+
+  document.getElementById('btnAddAlias').addEventListener('click', () => {
+    if (addContainer.innerHTML.trim()) { addContainer.innerHTML = ''; return; } // 토글: 다시 누르면 닫힘
+    addContainer.innerHTML = `
+      <div class="create-node-panel">
+        <div class="create-node-row">
+          <label>별칭</label>
+          <input type="text" id="newAliasInput" placeholder="예: MLA">
+        </div>
+        <div class="create-node-actions">
+          <button class="graph-btn" id="btnConfirmAddAlias">추가</button>
+          <button class="graph-btn" id="btnCancelAddAlias">취소</button>
+          <span class="node-view-edit-status" id="aliasAddStatus"></span>
+        </div>
+      </div>
+    `;
+    document.getElementById('btnCancelAddAlias').addEventListener('click', () => { addContainer.innerHTML = ''; });
+    document.getElementById('btnConfirmAddAlias').addEventListener('click', async () => {
+      const input = document.getElementById('newAliasInput');
+      const statusEl = document.getElementById('aliasAddStatus');
+      const alias = input.value.trim();
+      if (!alias) { statusEl.textContent = '별칭을 입력하세요.'; return; }
+      statusEl.textContent = '추가 중...';
+      try {
+        const res = await fetch(`/api/nodes/${type}/${encodeURIComponent(slug)}/aliases`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ alias }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          const message = typeof err.detail === 'string' ? err.detail : (err.detail?.message || '추가에 실패했습니다.');
+          throw new Error(message);
+        }
+        const { aliases } = await res.json();
+        chipsEl.innerHTML = renderAliasChips(aliases);
+        addContainer.innerHTML = '';
+      } catch (err) {
+        statusEl.textContent = err.message;
+      }
+    });
+  });
 }
 
 // concept/entity 생성 POST 하나를 공용으로 처리한다 - 서버가 "완전히 같은 이름"이

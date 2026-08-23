@@ -25,6 +25,7 @@ from paper_notes.node_store import (
     IMAGE_EXTENSIONS,
     NODE_STORE_ROOT,
     DuplicateNodeError,
+    add_alias,
     create_node_manual,
     delete_node,
     find_node_fuzzy,
@@ -34,6 +35,7 @@ from paper_notes.node_store import (
     link_node_to_paper,
     list_nodes,
     node_index,
+    remove_alias,
     remove_source,
     resolve_or_create_node,
     save_attachment,
@@ -585,6 +587,47 @@ async def put_node_notes(node_type: str, slug: str, payload: _NotesPayload):
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"ok": True}
+
+
+class _AliasPayload(BaseModel):
+    alias: str
+
+
+@app.post("/api/nodes/{node_type}/{slug}/aliases")
+async def add_node_alias(node_type: str, slug: str, payload: _AliasPayload):
+    """사용자가 노드 화면에서 직접 별칭을 추가한다 - LLM이 놓친 표기를 보완하거나,
+    나중에 발견한 다른 이름을 등록해둔다. 갱신된 aliases 목록을 반환한다."""
+    if node_type not in ("concept", "entity"):
+        raise HTTPException(status_code=404, detail="알 수 없는 노드 타입입니다.")
+    try:
+        aliases = add_alias(NODE_STORE_ROOT, node_type, slug, payload.alias)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except DuplicateNodeError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "type": "alias_taken",
+                "message": f"'{payload.alias}'는 이미 다른 노드(\"{exc.match['display_label']}\")가 쓰고 있습니다.",
+                "existing": {"slug": exc.match["slug"], "label": exc.match["display_label"]},
+            },
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"aliases": aliases}
+
+
+@app.delete("/api/nodes/{node_type}/{slug}/aliases")
+async def remove_node_alias(node_type: str, slug: str, payload: _AliasPayload):
+    """사용자가 노드 화면에서 직접 별칭을 지운다 - LLM이 잘못 판단해서 붙인 별칭을
+    바로잡을 수 있게 한다. 갱신된 aliases 목록을 반환한다."""
+    if node_type not in ("concept", "entity"):
+        raise HTTPException(status_code=404, detail="알 수 없는 노드 타입입니다.")
+    try:
+        aliases = remove_alias(NODE_STORE_ROOT, node_type, slug, payload.alias)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"aliases": aliases}
 
 
 @app.post("/api/nodes/{node_type}/{slug}/attachments")

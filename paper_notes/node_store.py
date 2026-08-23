@@ -664,6 +664,62 @@ def link_node_to_paper(store_root: str, node_type: str, node_slug: str, paper_sl
     _write_node_file(path, frontmatter, user_section)
 
 
+def add_alias(store_root: str, node_type: str, slug: str, alias: str) -> list[str]:
+    """사용자가 노드 화면에서 직접 별칭을 추가한다. LLM이 판단한 별칭이 항상
+    정확하다는 보장은 없으므로(놓친 표기가 있거나, 반대로 실제로는 다른 개념인데
+    같다고 오판했을 수도 있음), 사용자가 직접 보완/수정할 수 있게 한다. 별칭을
+    추가해두면 다음부터 그 표기로 들어오는 라벨도 find_node_fuzzy()의 O(1) 인덱스
+    조회로 바로 이 노드에 연결된다.
+
+    이미 다른 노드가 같은(정규화 기준) display_label/별칭을 쓰고 있으면 막는다 -
+    그대로 추가하면 인덱스에서 이 표기의 "주인"이 둘이 되어(먼저 등록된 쪽이
+    이기지만 어느 쪽이 먼저인지 사용자는 알 수 없음), Multi-head Latent
+    Attention/MLA 사이에서 실제로 겪었던 것과 같은 혼란이 다시 생긴다. 두 노드가
+    정말 같은 개념이면 별칭 추가가 아니라 병합(execute_merge)을 써야 한다.
+    갱신된 aliases 목록을 반환한다."""
+    alias = alias.strip()
+    if not alias:
+        raise ValueError("별칭을 입력하세요.")
+
+    path = _node_dir(store_root, node_type) / f"{slug}.md"
+    frontmatter = _read_frontmatter(path)
+    if not frontmatter.get("slug"):
+        raise FileNotFoundError(f"노드 파일을 찾을 수 없습니다: {slug}")
+
+    key = normalize_label(alias)
+    if normalize_label(frontmatter["display_label"]) == key:
+        raise ValueError("이미 이 노드의 표시 이름과 같습니다.")
+
+    owner = node_index(store_root, node_type).get(key)
+    if owner is not None and owner["slug"] != slug:
+        raise DuplicateNodeError(owner)
+
+    aliases = frontmatter.get("aliases") or []
+    if not any(normalize_label(a) == key for a in aliases):
+        aliases.append(alias)
+    frontmatter["aliases"] = aliases
+    user_section = _extract_user_section(path)
+    _write_node_file(path, frontmatter, user_section)
+    return aliases
+
+
+def remove_alias(store_root: str, node_type: str, slug: str, alias: str) -> list[str]:
+    """사용자가 노드 화면에서 직접 별칭을 지운다 - LLM이 잘못 판단해서 붙인 별칭
+    (실제로는 다른 개념인데 같다고 오판한 경우 등)을 사용자가 바로잡을 수 있게
+    한다. 갱신된 aliases 목록을 반환한다."""
+    path = _node_dir(store_root, node_type) / f"{slug}.md"
+    frontmatter = _read_frontmatter(path)
+    if not frontmatter.get("slug"):
+        raise FileNotFoundError(f"노드 파일을 찾을 수 없습니다: {slug}")
+
+    key = normalize_label(alias)
+    aliases = [a for a in (frontmatter.get("aliases") or []) if normalize_label(a) != key]
+    frontmatter["aliases"] = aliases
+    user_section = _extract_user_section(path)
+    _write_node_file(path, frontmatter, user_section)
+    return aliases
+
+
 def _update_node(path: Path, label: str, aliases: list[str], source_slug: str, source_title: str) -> None:
     frontmatter = _read_frontmatter(path)
 
