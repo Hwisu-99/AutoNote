@@ -122,7 +122,7 @@ function openFloatingPanel(clientX, clientY, buildFn) {
 
 // 그래프 배경(빈 공간) 우클릭 -> 개념/엔티티 생성 버튼 2개. orphan(carrier 논문
 // 없음)으로 만든 뒤, 우클릭했던 바로 그 자리에 나타나게 한다(연결은 이제 별도로
-// 노드를 2초 홀드+드래그해서 한다).
+// 노드를 0.5초 홀드+드래그해서 한다).
 let _pendingSpawnPosition = null;
 graphSvg.on('contextmenu', (event) => {
   event.preventDefault();
@@ -394,7 +394,7 @@ function renderGraph(data) {
     });
 
   // 실제 눈에 보이는 원(6~8px)은 클릭/우클릭/드래그 시작점을 정확히 맞추기엔 너무
-  // 작다 - 특히 2초 홀드+드래그 연결 제스처는 애초에 그 작은 원 위에 포인터를 놓는
+  // 작다 - 특히 0.5초 홀드+드래그 연결 제스처는 애초에 그 작은 원 위에 포인터를 놓는
   // 것부터 실패하기 쉽다. 그래서 보이지 않는(투명 채움) 더 큰 원을 눈에 보이는 원
   // 위에 하나 더 겹쳐 그리고, 모든 포인터 상호작용(드래그/우클릭/클릭/hover)은
   // 이 큰 원에만 건다 - 시각적으로는 원래 크기 그대로지만 실제로 반응하는 영역은
@@ -572,13 +572,13 @@ function renderGraph(data) {
   });
 }
 
-// 노드 하나를 2초 이상 누르고 있으면(미세하게 움직여도 취소되지 않음) 위치이동
+// 노드 하나를 0.5초 이상 누르고 있으면(미세하게 움직여도 취소되지 않음) 위치이동
 // 대신 "다른 노드로 드래그해 연결" 모드로 바뀐다: 임시 점선을 포인터를 따라
 // 그리다가, 다른 노드 위에서 놓으면 onConnectDrop(source, target, sourceEvent)을
-// 호출한다. 2초가 되기 전에 놓으면 지금까지와 똑같이 위치이동으로 끝난다.
+// 호출한다. 0.5초가 되기 전에 놓으면 지금까지와 똑같이 위치이동으로 끝난다.
 // d3.drag의 event.x/y는 이 노드가 속한 <g>(확대/축소 transform 적용된 그룹) 기준
 // 로컬 좌표라, nodes 배열의 x/y(시뮬레이션 좌표)와 그대로 비교/사용할 수 있다.
-const CONNECT_HOLD_MS = 2000;
+const CONNECT_HOLD_MS = 500;
 // 눈에 보이는 원 반지름(6~8px)이 아니라 실제 반응 영역인 hitArea 반지름(16)에
 // 맞춘다 - 드롭 판정도 클릭/드래그 시작 판정만큼 넉넉해야 한다.
 const CONNECT_HIT_RADIUS = 18;
@@ -597,7 +597,7 @@ function drag(sim, nodes, g, onConnectDrop, visibleNode) {
       d._dragStartY = d.y;
       d._holdTimer = setTimeout(() => {
         d._connecting = true;
-        // 2초가 실제로 지나서 연결 모드로 들어갔다는 걸 눈에 보이게 알려준다 -
+        // 0.5초가 실제로 지나서 연결 모드로 들어갔다는 걸 눈에 보이게 알려준다 -
         // 안 그러면 지금 홀드가 인식됐는지 사용자가 전혀 알 길이 없다(점선
         // 미리보기는 그 자리에서 움직이지 않으면 길이가 0이라 안 보임).
         visibleNode.filter((n) => n === d).classed('node-connecting', true);
