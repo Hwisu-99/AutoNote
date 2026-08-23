@@ -5,47 +5,13 @@ from pathlib import Path
 
 import yaml
 
-from paper_notes.dedup import dedupe_labels
-from paper_notes.node_store import IMAGE_EXTENSIONS, NODE_STORE_ROOT, find_node_fuzzy, list_nodes, node_index
+from paper_notes.node_store import IMAGE_EXTENSIONS, NODE_STORE_ROOT, list_nodes
 
 # Obsidian wikilink syntax: [[target]], [[target|alias]], embeds !\[\[target]]
 _WIKILINK_RE = re.compile(r"!?\[\[([^\]|#]+)(?:\|[^\]]+)?\]\]")
 # concept/entity 노드 편집 UI가 첨부 이미지를 넣을 때 쓰는 마크다운 이미지 문법: ![alt](경로)
 _MD_IMAGE_RE = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
 _FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)
-
-
-def _resolve_labels(
-    raw_labels: set[str], aliases: dict[str, list[str]], store_nodes: list[dict], store_index: dict[str, dict]
-) -> dict[str, tuple[str, str | None]]:
-    """원본 라벨 -> (그래프에 표시할 라벨, node_store slug 또는 None) 매핑을 만든다.
-
-    node_store에 이미 해당 개념의 물리적 노드 파일이 있으면, 그래프가 별도로
-    "대표 라벨"을 계산하지 않고 그 파일의 display_label을 그대로 가져다 쓴다 -
-    그래야 그래프에 보이는 라벨과 실제 클릭해서 들어가는 md 파일이 항상 정확히
-    일치하고, 매번 그래프를 그릴 때마다 "혹시 둘이 같은 개념인가" 재확인할 필요가
-    없다(node_store가 이미 한 번 판단해서 파일로 고정해둔 결과를 그대로 신뢰).
-    node_store에 아직 없는 라벨들만 예전처럼 dedupe_labels()로 서로 묶어 대표
-    라벨을 새로 고른다.
-
-    store_index(node_index() 결과)를 넘기면 대부분의(이미 알려진 표기의) 라벨은
-    O(1) 사전 조회로 즉시 풀리고, node_store에 정말 없는 새 표기만 느린 선형
-    탐색+MinHash 퍼지 매칭으로 넘어간다 - node_store 규모가 커져도 흔한 경우의
-    비용이 늘어나지 않게 하기 위함."""
-    resolved: dict[str, tuple[str, str | None]] = {}
-    unmatched: set[str] = set()
-    for label in raw_labels:
-        node = find_node_fuzzy(store_nodes, label, aliases.get(label), store_index)
-        if node:
-            resolved[label] = (node["display_label"], node["slug"])
-        else:
-            unmatched.add(label)
-
-    fallback_canon = dedupe_labels(unmatched, aliases={k: v for k, v in aliases.items() if k in unmatched})
-    for label in unmatched:
-        resolved[label] = (fallback_canon[label], None)
-
-    return resolved
 
 
 def _parse_note(path: Path) -> tuple[dict, str]:
@@ -61,18 +27,16 @@ def _parse_note(path: Path) -> tuple[dict, str]:
 
 
 def build_graph(vault_path: str, focus_slug: str | None = None, only_focus: bool = False) -> dict:
-    """AutoNote/ 폴더의 논문 노트들을 스캔해 Obsidian 그래프 뷰와 같은 방식으로
-    노드/에지를 만든다: 노트 = 주황 노드, concept = 회색 노드(frontmatter의
-    concepts), entity = 회색 노드(frontmatter의 entities, concept이 있으면
-    concept에 연결되고 없으면 note에 직접 연결), 공통 tag = 초록 노드를
-    매개로 한 에지. concepts/entities frontmatter가 없는 이전 노트는 본문의
-    [[위키링크]]를 concept으로 취급하는 방식으로 하위 호환한다.
+    """AutoNote/ 폴더의 논문 노트와 node_store(_concepts/_entities)를 스캔해
+    Obsidian 그래프 뷰와 같은 방식으로 노드/에지를 만든다: 노트 = 주황 노드,
+    concept = 파랑 노드, entity = 회색 노드, 공통 tag = 초록 노드를 매개로 한 에지.
 
-    concept/entity 노드의 라벨을 정할 때, node_store.py에 이미 물리적 노드
-    파일이 있는 라벨은 그 파일의 display_label을 그대로 쓴다(_resolve_labels) -
-    그래프 라벨과 클릭해서 들어가는 md 파일이 항상 정확히 일치하게 하기 위함.
-    아직 노드 파일이 없는 라벨들만 dedup.dedupe_labels()로 서로 병합해 새
-    대표 라벨을 고른다."""
+    concept/entity는 각 노드 파일의 sources 목록이 유일한 소스다 - 논문 노트
+    frontmatter에는 concepts/entities가 더 이상 없다(node_store.resolve_or_create_node가
+    논문을 처리하는 시점에 한 번만 라벨을 판정해 sources에 박아두므로, 그래프를
+    그릴 때마다 라벨을 다시 판정할 필요가 없다). entity의 sources 항목에
+    concept_slug가 있으면 그 논문에서는 해당 concept 밑에 묶인 것이고, 없으면
+    논문에 직접 연결된 것이다(같은 entity라도 논문마다 다를 수 있음)."""
     autonote_dir = Path(vault_path) / "AutoNote"
     if not autonote_dir.is_dir():
         return {"nodes": [], "edges": [], "focus": focus_slug}
@@ -91,20 +55,10 @@ def build_graph(vault_path: str, focus_slug: str | None = None, only_focus: bool
         tags = frontmatter.get("tags") or []
         if isinstance(tags, str):
             tags = [tags]
-        # concepts frontmatter는 예전 노트에서 문자열 리스트("Self-Attention")였다가
-        # aliases 필드 도입 이후 {label, aliases} 객체 리스트로 바뀌었다. 두 형식을
-        # 모두 {label, aliases} 형태로 정규화해 이후 로직을 단일 형식으로 다룬다.
-        fm_concepts = [
-            {"label": c, "aliases": []}
-            if isinstance(c, str)
-            else {"label": c["label"], "aliases": c.get("aliases") or []}
-            for c in (frontmatter.get("concepts") or [])
-        ]
-        fm_entities = [
-            {"label": e["label"], "concept": e.get("concept"), "aliases": e.get("aliases") or []}
-            for e in (frontmatter.get("entities") or [])
-        ]
 
+        # 본문의 [[위키링크]]는 이제 concept 후보로 취급하지 않는다(node_store가
+        # 유일한 소스) - 다른 논문 노트로의 직접 링크와, Obsidian이 붙여넣은 첨부
+        # 이미지 감지 용도로만 쓴다.
         links: set[str] = set()
         attachments: set[str] = set()
         for wikilink in _WIKILINK_RE.finditer(body):
@@ -112,8 +66,6 @@ def build_graph(vault_path: str, focus_slug: str | None = None, only_focus: bool
             if target.lower().endswith(".excalidraw"):
                 continue  # 개념도 임베드는 다른 논문 노트가 아니므로 그래프 에지에서 제외
             if Path(target).suffix.lower() in IMAGE_EXTENSIONS:
-                # Obsidian에서 사용자가 노트에 직접 붙여넣은 이미지(![[Pasted image ...]])는
-                # concept 후보가 아니라 첨부파일이므로 별도로 모아 attachment 노드로 만든다.
                 attachments.add(target)
                 continue
             links.add(target)
@@ -127,8 +79,6 @@ def build_graph(vault_path: str, focus_slug: str | None = None, only_focus: bool
                 "tags": tags,
                 "links": links,
                 "attachments": attachments,
-                "concepts": fm_concepts,
-                "entities": fm_entities,
             }
         )
 
@@ -136,8 +86,6 @@ def build_graph(vault_path: str, focus_slug: str | None = None, only_focus: bool
     nodes = [{"id": n["slug"], "label": n["title"], "type": "note"} for n in notes]
     edges: list[dict] = []
     seen_tag_nodes: set[str] = set()
-    seen_concept_nodes: set[str] = set()
-    seen_entity_nodes: set[str] = set()
     seen_attachment_nodes: set[str] = set()
 
     def _add_attachment(parent_id: str, owner_type: str, owner_slug: str, src: str) -> None:
@@ -161,91 +109,10 @@ def build_graph(vault_path: str, focus_slug: str | None = None, only_focus: bool
             seen_attachment_nodes.add(attachment_id)
         edges.append({"source": parent_id, "target": attachment_id, "type": "link"})
 
-    # 그래프가 커질수록 같은 개념이 논문마다 다른 표기("Self-Attention" vs
-    # "self attention mechanism")로 등장해 별개 노드로 쪼개지기 쉽다. 노드/에지를
-    # 만들기 전에 전체 vault를 훑어 concept/entity 라벨을 한 번에 중복 제거한다.
-    # aliases는 문자열 유사도로 못 잡는 경우(포함 관계, 동의어)를 모델의 문맥
-    # 판단으로 보완하기 위해 dedupe_labels에 함께 전달한다.
-    all_concept_labels: set[str] = set()
-    all_entity_labels: set[str] = set()
-    concept_aliases: dict[str, list[str]] = {}
-    entity_aliases: dict[str, list[str]] = {}
     for n in notes:
-        claimed = {c["label"] for c in n["concepts"]} | {e["label"] for e in n["entities"]}
-        for c in n["concepts"]:
-            all_concept_labels.add(c["label"])
-            if c["aliases"]:
-                concept_aliases.setdefault(c["label"], []).extend(c["aliases"])
-        for entity in n["entities"]:
-            all_entity_labels.add(entity["label"])
-            if entity["aliases"]:
-                entity_aliases.setdefault(entity["label"], []).extend(entity["aliases"])
-            concept_label = entity.get("concept")
-            if concept_label:
-                all_concept_labels.add(concept_label)
-        for target in n["links"]:
-            if target in note_slugs or target in claimed:
-                continue
-            all_concept_labels.add(target)
-
-    # concept/entity 노드에 물리적 노드 파일(node_store.py)이 있으면 그래프가
-    # 별도로 대표 라벨을 계산하지 않고 그 파일의 display_label/slug를 그대로
-    # 쓴다(_resolve_labels 참고) - 그래프 라벨과 실제 md 파일이 항상 일치한다.
-    # 목록은 노드 수와 무관하게 폴더당 한 번만 스캔한다.
-    concept_nodes_store = list_nodes(NODE_STORE_ROOT, "concept")
-    entity_nodes_store = list_nodes(NODE_STORE_ROOT, "entity")
-    concept_resolved = _resolve_labels(
-        all_concept_labels, concept_aliases, concept_nodes_store, node_index(NODE_STORE_ROOT, "concept")
-    )
-    entity_resolved = _resolve_labels(
-        all_entity_labels, entity_aliases, entity_nodes_store, node_index(NODE_STORE_ROOT, "entity")
-    )
-
-    for n in notes:
-        claimed = {c["label"] for c in n["concepts"]} | {e["label"] for e in n["entities"]}
-
-        for c in n["concepts"]:
-            canonical, node_slug = concept_resolved[c["label"]]
-            concept_id = f"concept:{canonical}"
-            if concept_id not in seen_concept_nodes:
-                nodes.append({"id": concept_id, "label": canonical, "type": "concept", "node_slug": node_slug})
-                seen_concept_nodes.add(concept_id)
-            edges.append({"source": n["slug"], "target": concept_id, "type": "link"})
-
-        for entity in n["entities"]:
-            entity_canonical, entity_node_slug = entity_resolved[entity["label"]]
-            entity_id = f"entity:{entity_canonical}"
-            if entity_id not in seen_entity_nodes:
-                nodes.append(
-                    {"id": entity_id, "label": entity_canonical, "type": "entity", "node_slug": entity_node_slug}
-                )
-                seen_entity_nodes.add(entity_id)
-
-            concept_label = entity.get("concept")
-            if concept_label:
-                canonical, node_slug = concept_resolved[concept_label]
-                concept_id = f"concept:{canonical}"
-                if concept_id not in seen_concept_nodes:
-                    nodes.append({"id": concept_id, "label": canonical, "type": "concept", "node_slug": node_slug})
-                    seen_concept_nodes.add(concept_id)
-                edges.append({"source": concept_id, "target": entity_id, "type": "link"})
-            else:
-                edges.append({"source": n["slug"], "target": entity_id, "type": "link"})
-
         for target in n["links"]:
             if target in note_slugs:
                 edges.append({"source": n["slug"], "target": target, "type": "link"})
-                continue
-            if target in claimed:
-                continue  # frontmatter의 concepts/entities로 이미 처리됨
-
-            # 하위 호환: concepts/entities frontmatter가 없던 이전 노트를 위한 fallback
-            canonical, node_slug = concept_resolved[target]
-            concept_id = f"concept:{canonical}"
-            if concept_id not in seen_concept_nodes:
-                nodes.append({"id": concept_id, "label": canonical, "type": "concept", "node_slug": node_slug})
-                seen_concept_nodes.add(concept_id)
-            edges.append({"source": n["slug"], "target": concept_id, "type": "link"})
 
         for tag in n["tags"]:
             tag_id = f"tag:{tag}"
@@ -257,47 +124,48 @@ def build_graph(vault_path: str, focus_slug: str | None = None, only_focus: bool
         for src in n["attachments"]:
             _add_attachment(n["slug"], "note", n["slug"], src)
 
-    # 아직 어느 논문에도 연결되지 않은(orphan) concept/entity 노드 파일도 그래프에
-    # 에지 없이 얹는다 - 사용자가 그래프 배경 우클릭으로 만든 뒤 나중에 드래그로
-    # 연결하기 전까지는 어떤 논문의 frontmatter에도 등장하지 않으므로 위 논문 순회
-    # 만으로는 나타나지 않는다. orphan_ids는 아래 only_focus 필터에서 예외로 쓴다 -
-    # 어떤 논문의 포커스 뷰를 보고 있든 orphan은 항상 보여야(연결할 대상을 찾아
-    # 드래그할 수 있어야) 하므로, 이 노드들만은 focus의 1~2촌 범위에 안 들어도 계속
-    # 남겨둔다.
-    # anchor_id(생성 당시 가장 가까웠던 다른 노드의 그래프 id)도 같이 실어보낸다 -
-    # 브라우저 새로고침/서버 재시작으로 프론트의 위치 캐시가 사라져도, 그래프를 다시
-    # 그릴 때 이 힌트로 그 노드 근처에 다시 나타나게 하기 위함(static/graph.js 참고).
+    # concept/entity는 node_store가 유일한 소스다 - 논문이 몇 편을 참조하든(0편,
+    # 즉 orphan 포함) 항상 그래프에 노드로 얹는다. 에지는 각 노드의 sources
+    # 항목이 있을 때만 생긴다 - orphan은 자연히 에지 없는 노드가 된다(예전처럼
+    # "orphan만 별도로 얹는" 특수 처리가 필요 없다).
+    concept_nodes_store = list_nodes(NODE_STORE_ROOT, "concept")
+    entity_nodes_store = list_nodes(NODE_STORE_ROOT, "entity")
+    concept_id_by_slug = {c["slug"]: f"concept:{c['display_label']}" for c in concept_nodes_store}
+
     orphan_ids: set[str] = set()
-    for store_node in concept_nodes_store:
-        node_id = f"concept:{store_node['display_label']}"
-        if not store_node.get("sources") and node_id not in seen_concept_nodes:
-            nodes.append({
-                "id": node_id, "label": store_node["display_label"], "type": "concept",
-                "node_slug": store_node["slug"], "anchor_id": store_node.get("anchor_id"),
-            })
-            seen_concept_nodes.add(node_id)
-            orphan_ids.add(node_id)
-    for store_node in entity_nodes_store:
-        node_id = f"entity:{store_node['display_label']}"
-        if not store_node.get("sources") and node_id not in seen_entity_nodes:
-            nodes.append({
-                "id": node_id, "label": store_node["display_label"], "type": "entity",
-                "node_slug": store_node["slug"], "anchor_id": store_node.get("anchor_id"),
-            })
-            seen_entity_nodes.add(node_id)
-            orphan_ids.add(node_id)
+
+    for c in concept_nodes_store:
+        concept_id = concept_id_by_slug[c["slug"]]
+        sources = c.get("sources") or []
+        nodes.append({"id": concept_id, "label": c["display_label"], "type": "concept",
+                       "node_slug": c["slug"], "anchor_id": c.get("anchor_id")})
+        if not sources:
+            orphan_ids.add(concept_id)
+        for source in sources:
+            paper_slug = source.get("slug")
+            if paper_slug in note_slugs:
+                edges.append({"source": paper_slug, "target": concept_id, "type": "link"})
+
+    for e in entity_nodes_store:
+        entity_id = f"entity:{e['display_label']}"
+        sources = e.get("sources") or []
+        nodes.append({"id": entity_id, "label": e["display_label"], "type": "entity",
+                       "node_slug": e["slug"], "anchor_id": e.get("anchor_id")})
+        if not sources:
+            orphan_ids.add(entity_id)
+        for source in sources:
+            concept_slug = source.get("concept_slug")
+            if concept_slug and concept_slug in concept_id_by_slug:
+                edges.append({"source": concept_id_by_slug[concept_slug], "target": entity_id, "type": "link"})
+            else:
+                paper_slug = source.get("slug")
+                if paper_slug in note_slugs:
+                    edges.append({"source": paper_slug, "target": entity_id, "type": "link"})
 
     # concept/entity 노드도 (node_store.py의 편집 UI로) 이미지를 첨부할 수 있다.
-    # 이번 그래프에 실제로 등장하는(=최소 한 논문이 참조하는) concept/entity만
-    # 대상으로, 그 물리 노드 파일 본문에서 첨부 이미지를 찾아 연결한다.
-    for store_nodes, seen_ids, prefix in (
-        (concept_nodes_store, seen_concept_nodes, "concept"),
-        (entity_nodes_store, seen_entity_nodes, "entity"),
-    ):
+    for store_nodes, prefix in ((concept_nodes_store, "concept"), (entity_nodes_store, "entity")):
         for store_node in store_nodes:
             node_id = f"{prefix}:{store_node['display_label']}"
-            if node_id not in seen_ids:
-                continue
             text = store_node["path"].read_text(encoding="utf-8")
             for md_image in _MD_IMAGE_RE.finditer(text):
                 _add_attachment(node_id, prefix, store_node["slug"], md_image.group(1).strip())

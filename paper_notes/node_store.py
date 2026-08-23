@@ -478,6 +478,7 @@ def resolve_or_create_node(
     category: str | None = None,
     description: str = "",
     note: str = "",
+    concept_slug: str | None = None,
 ) -> str:
     """label/aliases에 해당하는 concept/entity 노드 파일을 찾아 갱신하거나 새로
     만들고, 최종 slug를 반환한다.
@@ -491,18 +492,25 @@ def resolve_or_create_node(
     설명/비고)를 그대로 복사해오는 것이라 별도 API 호출이 필요 없다. display_label과
     같은 이유로 최초 생성 시에만 채워지고 이후 갱신에서는 바뀌지 않는다(어느 논문의
     설명이 "더 낫다"를 판단할 기준이 없음).
+
+    concept_slug는 entity 타입일 때만 의미 있다 - 이 논문에서 이 entity가 어느
+    concept 밑에 묶이는지(같은 entity라도 논문마다 다를 수 있음)를, entity 자신의
+    sources 항목 하나하나에 기록한다. 호출부(app.py의 run_pipeline)가 concept을
+    먼저 처리해서 얻은 최종 slug를 넘겨줘야 한다 - 그래야 이 논문에서 Claude가 쓴
+    원본 concept 라벨이 아니라, 실제로 확정된 노드를 가리키게 된다.
     """
     existing = _existing_nodes(store_root, node_type)
     matches = [n for n in existing if _matches_node(label, aliases, n)]
 
     if not matches:
         return _create_node(
-            store_root, node_type, label, aliases, source_slug, source_title, category, description, note
+            store_root, node_type, label, aliases, source_slug, source_title, category, description, note,
+            concept_slug=concept_slug,
         )
 
     matches.sort(key=lambda n: n.get("created_at", ""))
     primary = matches[0]
-    _update_node(primary["path"], label, aliases, source_slug, source_title)
+    _update_node(primary["path"], label, aliases, source_slug, source_title, concept_slug=concept_slug)
 
     for other in matches[1:]:
         _record_merge_candidate(store_root, node_type, primary["slug"], other["slug"], label, source_slug)
@@ -519,6 +527,7 @@ def create_node_manual(
     category: str | None = None,
     anchor_id: str | None = None,
     force: bool = False,
+    concept_slug: str | None = None,
 ) -> str:
     """사용자가 그래프 화면에서 직접 만드는 concept/entity 노드.
 
@@ -543,7 +552,10 @@ def create_node_manual(
     예: "concept:Foo" 또는 논문 slug)를 그대로 저장해둔다 - 브라우저 메모리에만 있는
     화면 좌표 캐시는 새로고침/서버 재시작으로 사라지므로, "이 노드는 원래 저 노드
     근처에 있었다"는 최소한의 힌트를 파일에 남겨서 다음 세션에도 그 근처에 다시
-    나타나게 한다(graph_builder.py가 읽어서 그래프 응답에 실어준다)."""
+    나타나게 한다(graph_builder.py가 읽어서 그래프 응답에 실어준다).
+
+    concept_slug는 entity를 진입점 3(concept 뷰의 "+ 엔티티 추가")로 만들 때만
+    쓴다 - carrier 논문에서 이 entity가 바로 그 concept 밑에 묶인다는 걸 기록한다."""
     slug = _slugify(label)
     path = _node_dir(store_root, node_type) / f"{slug}.md"
     if path.is_file():
@@ -556,7 +568,10 @@ def create_node_manual(
         if match:
             raise DuplicateNodeError(match)
 
-    return _create_node(store_root, node_type, label, [], source_slug, source_title, category, anchor_id=anchor_id)
+    return _create_node(
+        store_root, node_type, label, [], source_slug, source_title, category,
+        anchor_id=anchor_id, concept_slug=concept_slug,
+    )
 
 
 def delete_node(store_root: str, node_type: str, slug: str) -> dict:
@@ -609,6 +624,44 @@ def remove_source(store_root: str, source_slug: str) -> None:
                 path.unlink()
 
 
+def find_entities_by_concept(store_root: str, concept_slug: str) -> list[dict]:
+    """이 concept 밑에 걸린 entity 노드들을 찾는다 - entity 각각의 sources 항목
+    중 concept_slug가 일치하는 게 하나라도 있으면 포함시킨다(entity는 논문마다
+    다른 concept 밑에 묶일 수 있으므로, sources 항목 단위로 확인해야 한다).
+    concept 삭제 시 "딸린 entity도 같이 지울지" 물어보는 화면(app.py)이 이 함수로
+    무엇이 딸려있는지 미리 확인한다. 예전에는 논문 frontmatter를 훑어 라벨을
+    퍼지 매칭해야 했지만, 이제 entity 자신의 sources에 concept_slug가 그대로
+    적혀 있어 직접 비교만 하면 된다."""
+    return [
+        n for n in list_nodes(store_root, "entity")
+        if any(s.get("concept_slug") == concept_slug for s in (n.get("sources") or []))
+    ]
+
+
+def set_source_concept_slug(store_root: str, entity_slug: str, paper_slug: str, concept_slug: str) -> bool:
+    """이미 있는 entity 노드 파일의 sources 중 특정 논문 항목 하나에 concept_slug를
+    채워 넣는다. migrate_concept_slugs.py(1회성 마이그레이션 - 예전에는 논문
+    frontmatter에만 있던 entity-concept 그룹핑을 entity 자신의 sources로 옮김)가
+    쓴다. 실제로 값이 바뀌었으면 True, 항목을 못 찾았거나 이미 같은 값이면
+    False를 반환한다."""
+    path = _node_dir(store_root, "entity") / f"{entity_slug}.md"
+    if not path.is_file():
+        return False
+    frontmatter = _read_frontmatter(path)
+    sources = frontmatter.get("sources") or []
+    changed = False
+    for s in sources:
+        if s.get("slug") == paper_slug and s.get("concept_slug") != concept_slug:
+            s["concept_slug"] = concept_slug
+            changed = True
+    if not changed:
+        return False
+    frontmatter["sources"] = sources
+    user_section = _extract_user_section(path)
+    _write_node_file(path, frontmatter, user_section)
+    return True
+
+
 def _create_node(
     store_root: str,
     node_type: str,
@@ -620,6 +673,7 @@ def _create_node(
     description: str = "",
     note: str = "",
     anchor_id: str | None = None,
+    concept_slug: str | None = None,
 ) -> str:
     slug = _slugify(label)
     path = _node_dir(store_root, node_type) / f"{slug}.md"
@@ -630,7 +684,9 @@ def _create_node(
         "aliases": aliases,
         "description": description,
         "note": note,
-        "sources": [{"slug": source_slug, "title": source_title}] if source_slug else [],
+        "sources": (
+            [{"slug": source_slug, "title": source_title, "concept_slug": concept_slug}] if source_slug else []
+        ),
         "anchor_id": anchor_id,
         "created_at": _now_iso(),
     }
@@ -640,21 +696,25 @@ def _create_node(
     return slug
 
 
-def link_node_to_paper(store_root: str, node_type: str, node_slug: str, paper_slug: str, paper_title: str) -> None:
+def link_node_to_paper(
+    store_root: str, node_type: str, node_slug: str, paper_slug: str, paper_title: str,
+    concept_slug: str | None = None,
+) -> None:
     """이미 존재하는(orphan이든 아니든) concept/entity 노드 파일의 sources[]에 논문을
     하나 추가한다. _update_node()가 하는 일 중 sources 갱신 부분만 떼어낸 것과 같다 -
     라벨/alias 재매칭은 하지 않는다(호출부가 이미 정확히 어느 노드인지 slug로 알고
     있으므로 다시 퍼지 매칭할 이유가 없다). 그래프에서 노드를 다른 노드로 드래그해
-    연결하는 제스처가 이 함수를 쓴다. 논문 쪽 frontmatter(concepts/entities 목록)는
-    별도로 obsidian_writer.add_concept_to_note()/add_entity_to_note()가 갱신한다 -
-    두 쪽 다 갱신해야 그래프가 양방향에서 일관되게 보인다."""
+    연결하는 제스처가 이 함수를 쓴다.
+
+    concept_slug는 entity를 concept으로 드래그해 연결하는 경우에만 쓴다 - 이
+    논문에서는 그 concept 밑에 묶인다는 걸 sources 항목에 기록한다."""
     path = _node_dir(store_root, node_type) / f"{node_slug}.md"
     if not path.is_file():
         raise FileNotFoundError(f"노드 파일을 찾을 수 없습니다: {node_slug}")
     frontmatter = _read_frontmatter(path)
     sources = frontmatter.get("sources") or []
     if not any(s.get("slug") == paper_slug for s in sources):
-        sources.append({"slug": paper_slug, "title": paper_title})
+        sources.append({"slug": paper_slug, "title": paper_title, "concept_slug": concept_slug})
     frontmatter["sources"] = sources
     # 실제로 논문에 연결됐으니 이제 orphan이 아니다 - 그래프가 더 이상 anchor_id를
     # 안 쓰긴 하지만(sources가 있으면 무시함), frontmatter에 죽은 값으로 계속
@@ -720,7 +780,10 @@ def remove_alias(store_root: str, node_type: str, slug: str, alias: str) -> list
     return aliases
 
 
-def _update_node(path: Path, label: str, aliases: list[str], source_slug: str, source_title: str) -> None:
+def _update_node(
+    path: Path, label: str, aliases: list[str], source_slug: str, source_title: str,
+    concept_slug: str | None = None,
+) -> None:
     frontmatter = _read_frontmatter(path)
 
     # display_label은 최초 생성 시 표기로 고정한다("나중 표기가 항상 더 낫다"는
@@ -731,8 +794,11 @@ def _update_node(path: Path, label: str, aliases: list[str], source_slug: str, s
     frontmatter["aliases"] = sorted(existing_aliases)
 
     sources = frontmatter.get("sources") or []
+    # 같은 논문이 이미 sources에 있으면(재처리 등) 다시 추가하지 않는다 - 재처리
+    # 시에는 remove_source()가 먼저 옛 참조를 지우므로, "같은 논문인데 concept_slug만
+    # 다르게 다시 들어오는" 충돌은 실제로 발생하지 않는다.
     if not any(s["slug"] == source_slug for s in sources):
-        sources.append({"slug": source_slug, "title": source_title})
+        sources.append({"slug": source_slug, "title": source_title, "concept_slug": concept_slug})
     frontmatter["sources"] = sources
 
     user_section = _extract_user_section(path)

@@ -20,7 +20,6 @@ from paper_notes.claude_client import summarize_paper
 from paper_notes.excalidraw_writer import write_diagram
 from paper_notes.extractor import extract_text
 from paper_notes.graph_builder import build_graph
-from paper_notes.dedup import normalize_label
 from paper_notes.node_store import (
     IMAGE_EXTENSIONS,
     NODE_STORE_ROOT,
@@ -28,9 +27,9 @@ from paper_notes.node_store import (
     add_alias,
     create_node_manual,
     delete_node,
+    find_entities_by_concept,
     find_node_fuzzy,
     get_auto_section,
-    get_display_label,
     get_user_section,
     link_node_to_paper,
     list_nodes,
@@ -41,7 +40,6 @@ from paper_notes.node_store import (
     save_attachment,
     update_user_section,
 )
-from paper_notes.obsidian_writer import add_concept_to_note, add_entity_to_note, remove_node_from_note
 from paper_notes.obsidian_writer import delete_note as delete_local_note
 from paper_notes.obsidian_writer import write_note, write_summary_json
 from paper_notes.supabase_writer import delete_note as delete_remote_note
@@ -85,36 +83,15 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
 _WIKILINK_RE = re.compile(r"!?\[\[([^\]|#]+)(?:\|[^\]]+)?\]\]")
 
 
-def _frontmatter_label_aliases(frontmatter: dict) -> dict[str, list[str]]:
-    """frontmatter의 concepts/entities에서 {label: aliases} 사전을 만든다.
-    _resolve_wikilinks()가 본문의 [[label]]을 node_store와 다시 매칭할 때, 처리
-    시점(resolve_or_create_node)엔 있었던 alias 정보를 그대로 넘겨주기 위함이다.
-    aliases 필드 도입 이전 노트는 concepts가 문자열 리스트였으므로 함께 정규화한다."""
-    result: dict[str, list[str]] = {}
-    for c in frontmatter.get("concepts") or []:
-        if isinstance(c, str):
-            result[c] = []
-        else:
-            result[c["label"]] = c.get("aliases") or []
-    for e in frontmatter.get("entities") or []:
-        result[e["label"]] = e.get("aliases") or []
-    return result
-
-
-def _resolve_wikilinks(vault_path: str, body: str, label_aliases: dict[str, list[str]] | None = None) -> dict[str, dict]:
+def _resolve_wikilinks(vault_path: str, body: str) -> dict[str, dict]:
     """본문의 [[wikilink]] 대상들을 note(vault) 또는 concept/entity(node_store)로
     풀어서 {원본 타깃 텍스트: {type, slug}}를 반환한다. 프론트가 이걸로 위키링크를
     실제로 클릭 가능하게 만들지(어디로 보낼지) 판단한다. node 파일 자신이 만드는
     "## 등장 논문" 링크는 대상이 이미 논문 slug라 바로 맞아떨어지고, 논문 본문의
     concept/entity 위키링크는 그 논문이 직접 뽑은 원본 라벨이라 node_store와
-    퍼지 매칭(find_node_fuzzy)까지 거쳐야 한다.
-
-    label_aliases(보통 _frontmatter_label_aliases()로 만든 이 노트 자신의 concepts/
-    entities alias 사전)를 함께 넘기면, 처리 시점(resolve_or_create_node)엔 label+alias
-    둘 다로 node_store와 매칭했던 것을 여기서도 재현할 수 있다 - alias 없이 label
-    텍스트만으로는 못 잡는 경우(예: 이 논문은 "체크포인트 엔진"이라 쓰고 alias로만
-    "Checkpoint Engine"을 줬는데 node_store엔 그 영어 표기로 등록된 경우)가 있어서다."""
-    label_aliases = label_aliases or {}
+    퍼지 매칭(find_node_fuzzy)까지 거쳐야 한다 - 별도 alias 힌트 없이도 매칭되는데,
+    resolve_or_create_node()가 논문을 처리할 때마다 그 논문이 준 alias를 이미
+    node_store 파일 자신의 aliases에 누적해왔기 때문이다."""
     targets = set()
     for m in _WIKILINK_RE.finditer(body):
         target = m.group(1).strip()
@@ -134,12 +111,11 @@ def _resolve_wikilinks(vault_path: str, body: str, label_aliases: dict[str, list
         if (Path(vault_path) / "AutoNote" / target / f"{target}.md").is_file():
             links[target] = {"type": "note", "slug": target}
             continue
-        aliases = label_aliases.get(target)
-        concept_match = find_node_fuzzy(concept_nodes, target, aliases, index=concept_idx)
+        concept_match = find_node_fuzzy(concept_nodes, target, index=concept_idx)
         if concept_match:
             links[target] = {"type": "concept", "slug": concept_match["slug"]}
             continue
-        entity_match = find_node_fuzzy(entity_nodes, target, aliases, index=entity_idx)
+        entity_match = find_node_fuzzy(entity_nodes, target, index=entity_idx)
         if entity_match:
             links[target] = {"type": "entity", "slug": entity_match["slug"]}
     return links
@@ -196,8 +172,13 @@ async def run_pipeline(tmp_path: str, vault_path: str, request: Request, overwri
         try:
             if overwrite_slug:
                 remove_source(NODE_STORE_ROOT, overwrite_slug)
+            # concept을 먼저 처리해 최종 slug를 모아둔다 - entity가 이 논문에서
+            # 어느 concept 밑에 묶이는지는 Claude가 이 논문만 보고 낸 원본 라벨이
+            # 아니라, 실제로 확정된(기존 노드에 병합됐을 수도 있는) concept의
+            # slug를 가리켜야 한다.
+            concept_slug_by_id: dict[str, str] = {}
             for c in summary.get("concepts", []):
-                resolve_or_create_node(
+                concept_slug_by_id[c["id"]] = resolve_or_create_node(
                     NODE_STORE_ROOT, "concept", c["label"], c.get("aliases", []),
                     title_slug, summary["title"], category=c.get("category"),
                     description=c.get("description", ""), note=c.get("note", ""),
@@ -207,6 +188,7 @@ async def run_pipeline(tmp_path: str, vault_path: str, request: Request, overwri
                     NODE_STORE_ROOT, "entity", e["label"], e.get("aliases", []),
                     title_slug, summary["title"],
                     description=e.get("description", ""), note=e.get("note", ""),
+                    concept_slug=concept_slug_by_id.get(e.get("concept_id")) if e.get("concept_id") else None,
                 )
         except Exception as exc:  # noqa: BLE001 - 노드 파일 갱신 실패가 파이프라인 전체를 막지 않음
             print(f"  [경고] concept/entity 노드 파일 갱신 실패: {exc}")
@@ -384,8 +366,8 @@ async def add_concept(slug: str, payload: _AddConceptPayload):
     """사용자가 그래프/논문 화면에서 직접 concept을 추가한다. 이름이 완전히 같은
     노드가 이미 있으면 항상 409, 비슷한(퍼지 매칭) 노드가 있으면 force=false일 때만
     409(프론트가 "그래도 새로 만들지" 물어봄) - force=true면 그 확인을 건너뛰고
-    만든다. 성공하면 그 논문의 frontmatter concepts 목록에도 추가해 그래프에 바로
-    나타나게 한다."""
+    만든다. create_node_manual()이 sources에 이 논문을 바로 기록하므로(node_store가
+    유일한 소스), 논문 쪽에 별도로 쓸 것이 없다."""
     label = payload.label.strip()
     if not label:
         raise HTTPException(status_code=400, detail="개념 이름을 입력하세요.")
@@ -397,9 +379,6 @@ async def add_concept(slug: str, payload: _AddConceptPayload):
     frontmatter, _ = _parse_frontmatter(note_path.read_text(encoding="utf-8"))
     title = frontmatter.get("title") or slug
 
-    # create_node_manual()을 먼저 시도한다 - 이름이 겹쳐 실패하면 여기서 바로 끝나야
-    # 하고, 이미 논문 frontmatter에 concept을 추가해버린 뒤라면(반대 순서) 노드 파일
-    # 생성은 실패했는데 frontmatter만 바뀌어 있는 상태가 남는다.
     try:
         node_slug = create_node_manual(
             NODE_STORE_ROOT, "concept", label, slug, title, category=payload.category, force=payload.force
@@ -409,21 +388,21 @@ async def add_concept(slug: str, payload: _AddConceptPayload):
     except FileExistsError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    add_concept_to_note(vault_path, slug, label)
     return {"slug": node_slug}
 
 
 class _AddEntityPayload(BaseModel):
     label: str
-    concept: str | None = None
+    concept_slug: str | None = None
     force: bool = False
 
 
 @app.post("/api/papers/{slug}/entities")
 async def add_entity(slug: str, payload: _AddEntityPayload):
-    """사용자가 그래프/논문/concept 화면에서 직접 entity를 추가한다. concept을 주면
-    그래프에서 concept -> entity로 연결되고, 없으면 이 논문에 직접 연결된다(기존
-    LLM 추출 entity와 그래프 상 동일한 동작). force 처리는 add_concept()와 같다."""
+    """사용자가 그래프/논문/concept 화면에서 직접 entity를 추가한다. concept_slug를
+    주면 그래프에서 concept -> entity로 연결되고, 없으면 이 논문에 직접 연결된다
+    (기존 LLM 추출 entity와 그래프 상 동일한 동작). force 처리는 add_concept()와
+    같다."""
     label = payload.label.strip()
     if not label:
         raise HTTPException(status_code=400, detail="엔티티 이름을 입력하세요.")
@@ -436,13 +415,14 @@ async def add_entity(slug: str, payload: _AddEntityPayload):
     title = frontmatter.get("title") or slug
 
     try:
-        node_slug = create_node_manual(NODE_STORE_ROOT, "entity", label, slug, title, force=payload.force)
+        node_slug = create_node_manual(
+            NODE_STORE_ROOT, "entity", label, slug, title, force=payload.force, concept_slug=payload.concept_slug
+        )
     except DuplicateNodeError as exc:
         raise _duplicate_node_http_exception(exc) from exc
     except FileExistsError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    add_entity_to_note(vault_path, slug, label, payload.concept)
     return {"slug": node_slug}
 
 
@@ -487,16 +467,14 @@ async def create_orphan_node(payload: _CreateOrphanNodePayload):
 
 class _LinkNodePayload(BaseModel):
     paper_slug: str
-    concept_label: str | None = None
+    concept_slug: str | None = None
 
 
 @app.post("/api/nodes/{node_type}/{slug}/link")
 async def link_node(node_type: str, slug: str, payload: _LinkNodePayload):
     """그래프에서 concept/entity 노드(orphan이든 이미 다른 논문에 연결돼 있던 것이든)를
-    다른 논문 위로 드래그해서 연결할 때 호출된다. 노드 파일의 sources[]와 그 논문의
-    frontmatter concepts/entities 목록을 같이 갱신해야 그래프가 양방향에서 일관되게
-    보인다 - 한쪽만 갱신하면 delete_node_endpoint가 정리하는 것과 반대로 "논문엔
-    있는데 노드 파일엔 없는" 또는 그 반대인 어긋난 상태가 생긴다."""
+    다른 논문 위로 드래그해서 연결할 때 호출된다. node_store가 유일한 소스라
+    노드 파일의 sources[]만 갱신하면 된다(논문 쪽엔 더 이상 쓸 게 없음)."""
     if node_type not in ("concept", "entity"):
         raise HTTPException(status_code=404, detail="알 수 없는 노드 타입입니다.")
 
@@ -508,15 +486,12 @@ async def link_node(node_type: str, slug: str, payload: _LinkNodePayload):
     paper_title = frontmatter.get("title") or payload.paper_slug
 
     try:
-        link_node_to_paper(NODE_STORE_ROOT, node_type, slug, payload.paper_slug, paper_title)
+        link_node_to_paper(
+            NODE_STORE_ROOT, node_type, slug, payload.paper_slug, paper_title, concept_slug=payload.concept_slug
+        )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    label = get_display_label(NODE_STORE_ROOT, node_type, slug)
-    if node_type == "concept":
-        add_concept_to_note(vault_path, payload.paper_slug, label)
-    else:
-        add_entity_to_note(vault_path, payload.paper_slug, label, payload.concept_label)
     return {"ok": True}
 
 
@@ -537,7 +512,7 @@ async def get_node(node_type: str, slug: str):
             "title": frontmatter.get("title") or slug,
             "meta": {"authors": frontmatter.get("authors"), "tags": frontmatter.get("tags") or []},
             "body_markdown": body.strip(),
-            "links": _resolve_wikilinks(vault_path, body, _frontmatter_label_aliases(frontmatter)),
+            "links": _resolve_wikilinks(vault_path, body),
         }
 
     if node_type not in ("concept", "entity"):
@@ -650,35 +625,6 @@ async def post_node_attachment(node_type: str, slug: str, file: UploadFile = Fil
     return {"path": path}
 
 
-def _find_linked_entity_slugs(concept_frontmatter: dict, vault_path: str) -> list[dict]:
-    """이 concept의 sources에 있는 논문들을 훑어서, 그 논문 frontmatter의
-    entities[] 중 concept 필드가 이 concept을 가리키는 항목을 찾고, 각각을
-    node_store의 실제 entity 노드 파일(슬러그)로 풀어낸다. concept 삭제 시
-    "entity도 같이 지울지" 물어보는 대화상자에 무엇이 딸려있는지 보여주는 용도라,
-    호출 시점의 논문 frontmatter가 아직 이 concept 참조를 갖고 있어야 한다(삭제
-    처리 중 참조를 먼저 지워버린 뒤에 호출하면 항상 빈 목록이 나온다)."""
-    identity_keys = {
-        normalize_label(name)
-        for name in [concept_frontmatter.get("display_label", ""), *(concept_frontmatter.get("aliases") or [])]
-        if name
-    }
-    entity_nodes = list_nodes(NODE_STORE_ROOT, "entity")
-    entity_idx = node_index(NODE_STORE_ROOT, "entity")
-    found: dict[str, dict] = {}
-    for source in concept_frontmatter.get("sources") or []:
-        note_path = Path(vault_path) / "AutoNote" / source["slug"] / f"{source['slug']}.md"
-        if not note_path.is_file():
-            continue
-        frontmatter, _ = _parse_frontmatter(note_path.read_text(encoding="utf-8"))
-        for e in frontmatter.get("entities") or []:
-            if normalize_label(e.get("concept") or "") not in identity_keys:
-                continue
-            node = find_node_fuzzy(entity_nodes, e.get("label", ""), e.get("aliases"), entity_idx)
-            if node:
-                found[node["slug"]] = {"slug": node["slug"], "label": node["display_label"]}
-    return list(found.values())
-
-
 @app.get("/api/nodes/concept/{slug}/linked-entities")
 async def get_concept_linked_entities(slug: str):
     """concept 삭제 확인 창을 띄우기 전에, 이 concept 밑에 entity가 걸려 있는지
@@ -686,15 +632,17 @@ async def get_concept_linked_entities(slug: str):
     concept = next((n for n in list_nodes(NODE_STORE_ROOT, "concept") if n["slug"] == slug), None)
     if not concept:
         raise HTTPException(status_code=404, detail="노드를 찾을 수 없습니다.")
-    return {"entities": _find_linked_entity_slugs(concept, get_vault_path())}
+    entities = find_entities_by_concept(NODE_STORE_ROOT, slug)
+    return {"entities": [{"slug": e["slug"], "label": e["display_label"]} for e in entities]}
 
 
 @app.delete("/api/nodes/{node_type}/{slug}")
 async def delete_node_endpoint(node_type: str, slug: str, cascade_entities: bool = False):
     """사용자가 그래프에서 직접 만들었든 LLM이 뽑았든, concept/entity 노드를
-    통째로 지운다. 노드 파일만 지우면 그 노드를 참조하던 논문들의 frontmatter에
-    실제 파일 없는 "죽은" 라벨만 남아 그래프에 클릭 안 되는 상태로 계속 나타나므로,
-    삭제된 노드의 sources에 있던 논문들도 같이 훑어 참조를 정리한다.
+    통째로 지운다. node_store가 유일한 소스라 논문 쪽에는 정리할 게 없다 - 노드
+    파일만 지우면 된다(entity의 sources에 이 concept의 slug가 남아있어도,
+    graph_builder.py가 그 slug를 못 찾으면 자동으로 "논문에 직접 연결"로 취급하므로
+    죽은 참조로 인한 문제가 없다).
 
     cascade_entities=true면(concept 삭제일 때만 의미 있음) 그 concept 밑에 걸려있던
     entity 노드들까지 함께 지운다 - 기본값(false)은 기존 동작 그대로: entity는
@@ -702,46 +650,23 @@ async def delete_node_endpoint(node_type: str, slug: str, cascade_entities: bool
     if node_type not in ("concept", "entity"):
         raise HTTPException(status_code=404, detail="알 수 없는 노드 타입입니다.")
 
+    # cascade로 지울 entity는 concept 자신을 지우기 전에 찾아둔다(순서는 사실
+    # 상관없다 - entity의 sources에 있는 concept_slug는 concept 파일 삭제와
+    # 무관하게 그대로 남아있으므로).
+    cascade_entity_slugs: list[str] = []
+    if node_type == "concept" and cascade_entities:
+        cascade_entity_slugs = [e["slug"] for e in find_entities_by_concept(NODE_STORE_ROOT, slug)]
+
     try:
-        frontmatter = delete_node(NODE_STORE_ROOT, node_type, slug)
+        delete_node(NODE_STORE_ROOT, node_type, slug)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    vault_path = get_vault_path()
-
-    # cascade로 지울 entity 슬러그는, 아래에서 concept의 논문 참조를 정리(concept
-    # 필드를 null로 되돌림)하기 전에 미리 찾아둬야 한다 - 그 정리가 끝나면 더 이상
-    # 어느 entity가 이 concept 밑에 있었는지 논문 frontmatter로는 알 수 없어진다.
-    cascade_entity_slugs: list[str] = []
-    if node_type == "concept" and cascade_entities:
-        cascade_entity_slugs = [e["slug"] for e in _find_linked_entity_slugs(frontmatter, vault_path)]
-
-    identity_keys = {
-        normalize_label(name)
-        for name in [frontmatter.get("display_label", ""), *(frontmatter.get("aliases") or [])]
-        if name
-    }
-    for source in frontmatter.get("sources") or []:
-        try:
-            remove_node_from_note(vault_path, source["slug"], identity_keys, node_type == "concept")
-        except Exception as exc:  # noqa: BLE001 - 한 논문 정리 실패가 다른 논문 정리를 막지 않음
-            print(f"  [경고] {source['slug']} frontmatter 정리 실패: {exc}")
-
     for entity_slug in cascade_entity_slugs:
         try:
-            entity_frontmatter = delete_node(NODE_STORE_ROOT, "entity", entity_slug)
+            delete_node(NODE_STORE_ROOT, "entity", entity_slug)
         except FileNotFoundError:
             continue
-        entity_identity_keys = {
-            normalize_label(name)
-            for name in [entity_frontmatter.get("display_label", ""), *(entity_frontmatter.get("aliases") or [])]
-            if name
-        }
-        for source in entity_frontmatter.get("sources") or []:
-            try:
-                remove_node_from_note(vault_path, source["slug"], entity_identity_keys, False)
-            except Exception as exc:  # noqa: BLE001
-                print(f"  [경고] {source['slug']} frontmatter 정리 실패: {exc}")
 
     return {"ok": True}
 

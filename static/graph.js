@@ -478,7 +478,7 @@ function renderGraph(data) {
       if (!paperIds.length) return; // orphan concept(연결된 논문 없음) - 붙일 paper_slug가 없어 연결 불가
 
       if (paperIds.length === 1) {
-        await callLinkApi('entity', source.node_slug, paperIds[0], target.label);
+        await callLinkApi('entity', source.node_slug, paperIds[0], target.node_slug);
         return;
       }
       const options = paperIds
@@ -486,17 +486,17 @@ function renderGraph(data) {
         .filter(Boolean);
       showContextMenu(sourceEvent.clientX, sourceEvent.clientY, options.map((opt) => ({
         label: opt.label,
-        onClick: () => callLinkApi('entity', source.node_slug, opt.id, target.label),
+        onClick: () => callLinkApi('entity', source.node_slug, opt.id, target.node_slug),
       })));
     }
   }
 
-  async function callLinkApi(nodeType, nodeSlug, paperSlug, conceptLabel) {
+  async function callLinkApi(nodeType, nodeSlug, paperSlug, conceptSlug) {
     try {
       const res = await fetch(`/api/nodes/${nodeType}/${encodeURIComponent(nodeSlug)}/link`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ paper_slug: paperSlug, concept_label: conceptLabel || null }),
+        body: JSON.stringify({ paper_slug: paperSlug, concept_slug: conceptSlug || null }),
       });
       if (!res.ok) throw new Error('link failed');
       loadGraph(currentFocus, currentFocus !== null);
@@ -1087,7 +1087,7 @@ async function openNodeView(type, slug, fallbackLabel) {
       }
       openCreateNodePanel(container, {
         fixedType: 'entity',
-        fixedConcept: { label: data.title },
+        fixedConcept: { label: data.title, slug: data.slug },
         carrierOptions: sources,
         onCreated: () => loadGraph(currentFocus, currentFocus !== null),
       });
@@ -1214,7 +1214,7 @@ async function postWithDuplicateCheck(url, body) {
 //   config.fixedType       - 'concept' | 'entity' | undefined(사용자가 고름)
 //   config.fixedCarrier    - {slug, title} | undefined(사용자가 고름)
 //   config.carrierOptions  - fixedCarrier가 없을 때 고를 논문 목록 [{slug, title}]
-//   config.fixedConcept    - {label} | undefined(entity일 때 사용자가 고름)
+//   config.fixedConcept    - {label, slug} | undefined(entity일 때 사용자가 고름)
 //   config.needsConcepts   - true면 concept 목록을 미리 fetch해 entity 연결 드롭다운에 씀
 //   config.orphan          - true면 "연결할 논문" 행 자체를 숨기고 POST /api/nodes로 만든다
 //                             (그래프 배경 우클릭 진입점 - 나중에 드래그로 따로 연결)
@@ -1262,7 +1262,7 @@ function openCreateNodePanel(container, config) {
               ? `<input type="text" value="${escapeHtml(config.fixedConcept.label)}" disabled>`
               : `<select id="cnConcept">
                   <option value="">(없음 - 논문에 직접 연결)</option>
-                  ${concepts.map((c) => `<option value="${escapeHtml(c.label)}">${escapeHtml(c.label)}</option>`).join('')}
+                  ${concepts.map((c) => `<option value="${escapeHtml(c.slug)}">${escapeHtml(c.label)}</option>`).join('')}
                 </select>`
             }
           </div>
@@ -1309,8 +1309,8 @@ function openCreateNodePanel(container, config) {
       body = { label, category: document.getElementById('cnCategory').value };
       url = `/api/papers/${encodeURIComponent(carrierSlug)}/concepts`;
     } else {
-      const concept = config.fixedConcept ? config.fixedConcept.label : (document.getElementById('cnConcept').value || null);
-      body = { label, concept };
+      const conceptSlug = config.fixedConcept ? config.fixedConcept.slug : (document.getElementById('cnConcept').value || null);
+      body = { label, concept_slug: conceptSlug };
       url = `/api/papers/${encodeURIComponent(carrierSlug)}/entities`;
     }
 

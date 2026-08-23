@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
+from unittest import mock
 
 from paper_notes.dedup import dedupe_labels, jaccard_estimate, labels_match, minhash_signature, normalize_label
 from paper_notes.dedup import _hash_permutations, _shingles
-from paper_notes.graph_builder import _resolve_labels, build_graph
-from paper_notes.node_store import build_node_index
+from paper_notes.graph_builder import build_graph
+from paper_notes.node_store import create_node_manual, resolve_or_create_node
 
 FAILURES: list[str] = []
 
@@ -143,97 +144,6 @@ def test_dedupe_labels_empty_and_single() -> None:
     check("dedupe_labels: 단일 라벨은 자기 자신에 매핑", single == {"Attention": "Attention"})
 
 
-def _write_note(vault: Path, slug: str, concepts: list[str] | list[dict], entities: list[dict]) -> None:
-    """concepts는 예전 형식(문자열 리스트)과 새 형식({label, aliases} 객체 리스트)을
-    모두 받아 graph_builder의 하위 호환 파싱을 같은 테스트 헬퍼로 검증할 수 있게 한다."""
-    folder = vault / "AutoNote" / slug
-    folder.mkdir(parents=True, exist_ok=True)
-
-    def _aliases_yaml(aliases: list[str], indent: str) -> str:
-        if not aliases:
-            return f"{indent}aliases: []"
-        items = "\n".join(f'{indent}  - "{a}"' for a in aliases)
-        return f"{indent}aliases:\n{items}"
-
-    entities_yaml = "\n".join(
-        f"  - label: \"{e['label']}\""
-        + (f"\n    concept: \"{e['concept']}\"" if e.get("concept") else "")
-        + "\n"
-        + _aliases_yaml(e.get("aliases", []), "    ")
-        for e in entities
-    )
-    concepts_yaml = "\n".join(
-        f'  - "{c}"'
-        if isinstance(c, str)
-        else f'  - label: "{c["label"]}"\n' + _aliases_yaml(c.get("aliases", []), "    ")
-        for c in concepts
-    )
-    content = f"""---
-title: {slug}
-tags: []
-concepts:
-{concepts_yaml or '  []'}
-entities:
-{entities_yaml or '  []'}
----
-
-# {slug}
-"""
-    (folder / f"{slug}.md").write_text(content, encoding="utf-8")
-
-
-def test_build_graph_merges_cross_note_concepts() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        vault = Path(tmp)
-        _write_note(vault, "paper-a", concepts=["Self-Attention"], entities=[])
-        _write_note(vault, "paper-b", concepts=["self attention"], entities=[])
-        _write_note(vault, "paper-c", concepts=["Byte Pair Encoding"], entities=[])
-
-        graph = build_graph(str(vault))
-        concept_nodes = [n for n in graph["nodes"] if n["type"] == "concept"]
-        concept_ids = {n["id"] for n in concept_nodes}
-
-        check(
-            "build_graph: 표기만 다른 concept이 하나의 노드로 합쳐짐",
-            len(concept_nodes) == 2,
-            f"concept nodes: {concept_nodes}",
-        )
-
-        note_to_concept_targets = {
-            e["target"] for e in graph["edges"] if e["source"] in {"paper-a", "paper-b"}
-        }
-        check(
-            "build_graph: paper-a/paper-b가 동일한 concept 노드를 가리킴",
-            len(note_to_concept_targets) == 1 and note_to_concept_targets <= concept_ids,
-            f"{note_to_concept_targets}",
-        )
-
-
-def test_build_graph_merges_via_alias_frontmatter() -> None:
-    """포함 관계라 문자열 유사도로는 안 합쳐질 두 논문의 concept이, 프론트매터에
-    저장된 alias를 통해 하나의 노드로 합쳐지는지 end-to-end로 확인한다."""
-    with tempfile.TemporaryDirectory() as tmp:
-        vault = Path(tmp)
-        _write_note(
-            vault, "paper-a",
-            concepts=[{"label": "Self-Attention", "aliases": ["Self-Attention Mechanism"]}],
-            entities=[],
-        )
-        _write_note(
-            vault, "paper-b",
-            concepts=[{"label": "Attention Mechanism", "aliases": ["Self-Attention Mechanism"]}],
-            entities=[],
-        )
-
-        graph = build_graph(str(vault))
-        concept_nodes = [n for n in graph["nodes"] if n["type"] == "concept"]
-        check(
-            "build_graph: alias를 공유하는 서로 다른 표기의 concept이 하나로 합쳐짐",
-            len(concept_nodes) == 1,
-            f"concept nodes: {concept_nodes}",
-        )
-
-
 def test_labels_match_covers_dedupe_labels_criteria() -> None:
     """labels_match()는 node_store.py가 graph_builder.py의 dedupe_labels()와
     같은 기준으로 단건 비교를 할 수 있게 뽑아낸 함수다. dedupe_labels()가 쓰는
@@ -260,31 +170,97 @@ def test_labels_match_covers_dedupe_labels_criteria() -> None:
     )
 
 
-def test_resolve_labels_uses_node_store_display_label_when_matched() -> None:
-    """node_store 파일이 있는 라벨은 그래프가 별도로 대표 라벨을 계산하지 않고
-    그 파일의 display_label을 그대로 써야 한다(그래프 라벨 = 실제 md 파일이
-    항상 일치하게). 순수 함수라 파일 시스템 없이 가짜 노드 목록으로 테스트한다."""
-    store_nodes = [
-        {
-            "slug": "selective-state-space-models",
-            "display_label": "Selective State Space Models",
-            "aliases": ["SSM"],
-        },
-    ]
-    raw_labels = {"Selective State Space Model", "Byte Pair Encoding"}
-    resolved = _resolve_labels(raw_labels, {}, store_nodes, build_node_index(store_nodes))
+def _write_paper(vault: Path, slug: str) -> None:
+    """graph_builder가 읽는 논문 노트는 이제 title/tags만 있으면 된다 -
+    concepts/entities는 node_store(각 노드 파일의 sources)가 유일한 소스다."""
+    folder = vault / "AutoNote" / slug
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f"{slug}.md").write_text(
+        f"---\ntitle: {slug}\ntags: []\n---\n\n# {slug}\n", encoding="utf-8"
+    )
 
-    check(
-        "node_store에 매칭되는 라벨은 파일의 display_label/slug를 그대로 씀",
-        resolved["Selective State Space Model"]
-        == ("Selective State Space Models", "selective-state-space-models"),
-        str(resolved),
-    )
-    check(
-        "매칭 안 되는 라벨은 fallback dedupe_labels로 처리되고 node_slug는 None",
-        resolved["Byte Pair Encoding"][1] is None,
-        str(resolved),
-    )
+
+def test_build_graph_reads_concept_edges_from_node_store() -> None:
+    """graph_builder는 논문 frontmatter가 아니라 concept 파일 자신의 sources를
+    읽어 논문 <-> concept 에지를 만든다. 같은 concept이 두 논문에서 처리되면
+    (resolve_or_create_node가 이미 한 파일로 합쳐뒀으므로) 그래프에는 노드
+    하나, 에지 두 개로 나타나야 한다."""
+    with tempfile.TemporaryDirectory() as tmp:
+        vault = Path(tmp) / "vault"
+        store = Path(tmp) / "store"
+        _write_paper(vault, "paper-a")
+        _write_paper(vault, "paper-b")
+        resolve_or_create_node(str(store), "concept", "Self-Attention", [], "paper-a", "Paper A")
+        resolve_or_create_node(str(store), "concept", "self attention", [], "paper-b", "Paper B")
+
+        with mock.patch("paper_notes.graph_builder.NODE_STORE_ROOT", str(store)):
+            graph = build_graph(str(vault))
+
+        concept_nodes = [n for n in graph["nodes"] if n["type"] == "concept"]
+        check(
+            "build_graph: node_store에서 이미 합쳐진 concept은 노드 하나로만 나타남",
+            len(concept_nodes) == 1,
+            f"concept nodes: {concept_nodes}",
+        )
+        targets = {e["target"] for e in graph["edges"] if e["source"] in {"paper-a", "paper-b"}}
+        check(
+            "build_graph: paper-a/paper-b 둘 다 같은 concept 노드를 가리킴",
+            targets == {concept_nodes[0]["id"]},
+            f"{targets}",
+        )
+
+
+def test_build_graph_entity_concept_slug_makes_concept_entity_edge() -> None:
+    """entity의 sources 항목에 concept_slug가 있으면 논문이 아니라 concept
+    노드에서 entity로 에지가 생겨야 한다(concept_slug가 없는 entity는 지금도
+    논문에 직접 연결됨 - 아래 test_build_graph_reads_concept_edges_from_node_store가
+    그 경로를 이미 concept으로 검증하므로 여기선 대비만 확인)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        vault = Path(tmp) / "vault"
+        store = Path(tmp) / "store"
+        _write_paper(vault, "paper-a")
+        concept_slug = resolve_or_create_node(str(store), "concept", "Attention", [], "paper-a", "Paper A")
+        resolve_or_create_node(
+            str(store), "entity", "Scaled Dot-Product Attention", [], "paper-a", "Paper A",
+            concept_slug=concept_slug,
+        )
+
+        with mock.patch("paper_notes.graph_builder.NODE_STORE_ROOT", str(store)):
+            graph = build_graph(str(vault))
+
+        concept_id = next(n["id"] for n in graph["nodes"] if n["type"] == "concept")
+        entity_id = next(n["id"] for n in graph["nodes"] if n["type"] == "entity")
+        edge_pairs = {(e["source"], e["target"]) for e in graph["edges"]}
+        check(
+            "build_graph: concept_slug가 있으면 concept -> entity 에지가 생김",
+            (concept_id, entity_id) in edge_pairs,
+            f"{edge_pairs}",
+        )
+        check(
+            "build_graph: concept_slug가 있으면 paper -> entity 직접 에지는 생기지 않음",
+            ("paper-a", entity_id) not in edge_pairs,
+            f"{edge_pairs}",
+        )
+
+
+def test_build_graph_orphan_node_has_no_edges() -> None:
+    """sources가 비어있는(아직 어떤 논문과도 연결 안 된) concept/entity도
+    항상 노드로는 나타나야 하고, 에지는 하나도 없어야 한다."""
+    with tempfile.TemporaryDirectory() as tmp:
+        vault = Path(tmp) / "vault"
+        store = Path(tmp) / "store"
+        (vault / "AutoNote").mkdir(parents=True)
+        create_node_manual(str(store), "concept", "Orphan Concept", None, None)
+
+        with mock.patch("paper_notes.graph_builder.NODE_STORE_ROOT", str(store)):
+            graph = build_graph(str(vault))
+
+        concept_nodes = [n for n in graph["nodes"] if n["type"] == "concept"]
+        check("build_graph: orphan concept도 노드로 나타남", len(concept_nodes) == 1, f"{concept_nodes}")
+        check(
+            "build_graph: orphan concept은 에지가 없음",
+            not any(concept_nodes[0]["id"] in (e["source"], e["target"]) for e in graph["edges"]),
+        )
 
 
 def main() -> None:
@@ -297,10 +273,10 @@ def main() -> None:
     test_dedupe_labels_no_alias_does_not_merge_unrelated()
     test_dedupe_labels_blocks_numeric_mismatch()
     test_dedupe_labels_empty_and_single()
-    test_build_graph_merges_cross_note_concepts()
-    test_build_graph_merges_via_alias_frontmatter()
     test_labels_match_covers_dedupe_labels_criteria()
-    test_resolve_labels_uses_node_store_display_label_when_matched()
+    test_build_graph_reads_concept_edges_from_node_store()
+    test_build_graph_entity_concept_slug_makes_concept_entity_edge()
+    test_build_graph_orphan_node_has_no_edges()
 
     print()
     if FAILURES:
