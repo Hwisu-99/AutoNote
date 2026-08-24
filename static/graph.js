@@ -541,7 +541,9 @@ function renderGraph(data) {
     });
 
     node.classed('dimmed', (d) => !connectedIds.has(d.id));
-    label.classed('dimmed', (d) => !connectedIds.has(d.id));
+    label
+      .classed('dimmed', (d) => !connectedIds.has(d.id))
+      .classed('hovered', (d) => d.id === hoveredId);
     link
       .classed('dimmed', (d, i) => !connectedLinkIndexes.has(i))
       .classed('highlighted', (d, i) => connectedLinkIndexes.has(i));
@@ -549,7 +551,7 @@ function renderGraph(data) {
 
   function clearHighlight() {
     node.classed('dimmed', false);
-    label.classed('dimmed', false);
+    label.classed('dimmed', false).classed('hovered', false);
     link.classed('dimmed', false).classed('highlighted', false);
   }
 

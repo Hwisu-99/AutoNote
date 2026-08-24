@@ -82,6 +82,7 @@ body.graph-expanded #graphSummary {
 .node-entity { fill: var(--text-muted); stroke: var(--surface); stroke-width: 1px; cursor: grab; }
 .node-attachment { fill: var(--attachment-yellow); stroke: var(--surface); stroke-width: 1px; cursor: grab; }
 .graph-label { fill: var(--text-muted); font-size: 10px; pointer-events: none; user-select: none; }
+.graph-label.hovered { fill: var(--text); font-weight: 700; }
 .graph-link { stroke: var(--border); stroke-opacity: .7; transition: opacity .15s ease, stroke .15s ease, stroke-opacity .15s ease; }
 
 .dimmed { opacity: .15; transition: opacity .15s ease; }
