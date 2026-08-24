@@ -1000,20 +1000,29 @@ async function openNodeView(type, slug, fallbackLabel) {
   if (data.type === 'note') {
     if (data.meta.authors) metaChips.push(`<span>저자: ${escapeHtml(data.meta.authors)}</span>`);
     if (data.meta.tags?.length) metaChips.push(`<span>${escapeHtml(data.meta.tags.map((t) => '#' + t).join(' '))}</span>`);
-  } else {
-    if (data.meta.sources?.length) metaChips.push(`<span>등장 논문 ${data.meta.sources.length}편</span>`);
   }
+  // concept/entity의 "등장 논문 N편" + 목록은 이제 본문(auto_markdown)이 순서대로
+  // 보여주므로(node_store._write_node_file 참고) 여기서 따로 칩으로 요약하지 않는다.
 
   // note(논문)는 아직 편집 대상이 아니고, concept/entity 노드 파일만 개인 메모
   // 편집(+이미지 붙여넣기)을 지원한다.
   const editable = data.type === 'concept' || data.type === 'entity';
 
-  // obsidian_writer.py는 논문 노트 본문을 항상 "# {title}"로 시작한다(Obsidian에서
-  // 노트를 열었을 때 제목이 보이도록). 여기선 위 .node-view-title이 이미 같은 제목을
-  // 보여주므로, 본문 첫 줄이 그 h1이면 중복 표시되지 않게 걷어낸다. concept/entity
-  // 노드 파일의 자동 생성 영역은 애초에 h1으로 시작하지 않아 이 처리가 필요 없다.
+  // obsidian_writer.py/node_store.py 둘 다 본문을 "# {제목}"으로 시작한다
+  // (Obsidian에서 파일을 직접 열었을 때 제목이 보이도록). 여기선 위
+  // .node-view-title이 이미 같은 제목을 보여주므로 걷어낸다. concept/entity는
+  // 제목 다음에 "다른 표기"/"카테고리"/"등장 논문 N편"도 오는데, 이 전부 위쪽
+  // 메타 행(node-view-aliases 등)이 이미 일관된 스타일로 보여주고 있어 - 본문
+  // 마크다운의 **볼드**는 본문 기본 글자색(--text)이라 메타 행의 옅은 색
+  // (--text-muted)과 안 맞기도 하고, 그대로 두면 정보가 중복 표시된다.
+  // 본문은 "등장 논문" 목록(실제 클릭 가능한 링크)부터만 보여준다 -
+  // node_store._write_node_file()이 만드는 순서를 그대로 아는 상태로 걷어내는
+  // 것이라, 그 함수의 순서가 바뀌면 이 정규식도 같이 바꿔야 한다.
   const bodyMarkdown = editable
-    ? (data.auto_markdown || '')
+    ? (data.auto_markdown || '').replace(
+        /^#[^\n]*\n\n\*\*다른 표기\*\*:[^\n]*\n\n(?:\*\*카테고리\*\*:[^\n]*\n\n)?\*\*등장 논문\*\*[^\n]*\n/,
+        ''
+      )
     : data.body_markdown.replace(/^#\s+.*(\n+|$)/, '');
 
   const userMarkdown = data.user_markdown || '';
@@ -1039,6 +1048,12 @@ async function openNodeView(type, slug, fallbackLabel) {
         <button class="graph-btn" id="btnAddCategory">+ 카테고리</button>
       </div>
       <div id="addCategoryContainer"></div>
+    ` : ''}
+    ${editable ? `
+      <div class="node-view-aliases">
+        <span class="node-view-aliases-label">등장 논문</span>
+        <span>${(data.meta.sources || []).length}편</span>
+      </div>
     ` : ''}
     ${data.type === 'note' ? `
       <div class="node-view-side-panel">

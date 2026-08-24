@@ -192,6 +192,23 @@ def get_auto_section(store_root: str, node_type: str, slug: str) -> str:
     return text[start + len(_AUTO_MARKER) : end].strip()
 
 
+def refresh_auto_section(store_root: str, node_type: str, slug: str) -> bool:
+    """이 노드 파일의 자동 생성 영역(제목/다른 표기/카테고리/등장 논문/AI 설명)을
+    지금의 _write_node_file() 템플릿으로 다시 그려 넣는다. frontmatter와
+    사용자가 쓴 메모는 그대로 두고 본문 레이아웃만 최신화한다 - 예전 형식으로
+    이미 만들어진 노드 파일을 새 레이아웃으로 맞추는 1회성 마이그레이션
+    스크립트가 쓴다. 병합돼 사라진 redirect 스텁은 건드리지 않는다(더 이상
+    독립된 노드가 아니므로). 실제로 다시 썼으면 True, 파일이 없거나 redirect
+    스텁이면 False."""
+    path = _node_dir(store_root, node_type) / f"{slug}.md"
+    frontmatter = _read_frontmatter(path)
+    if not frontmatter.get("slug") or frontmatter.get("redirect_to"):
+        return False
+    user_section = _extract_user_section(path)
+    _write_node_file(path, frontmatter, user_section)
+    return True
+
+
 def update_user_section(store_root: str, node_type: str, slug: str, user_markdown: str) -> None:
     """사용자가 편집한 메모를 저장한다. frontmatter/자동 생성 영역(등장 논문
     목록)은 건드리지 않고 user_section만 교체한다. 병합돼 사라진 redirect
@@ -334,25 +351,38 @@ def find_node_slug_fuzzy(
 def _write_node_file(path: Path, frontmatter: dict, user_section: str) -> None:
     frontmatter_yaml = yaml.safe_dump(frontmatter, allow_unicode=True, sort_keys=False).strip()
 
-    # description/note는 논문 노트의 레퍼런스 표에 있던 설명을 그대로 복사해온 것 -
-    # 최초 생성 시에만 채워지므로 없을 수도 있다(그 이전에 만들어진 노드, 혹은 값을
-    # 안 넘긴 호출부).
-    auto_lines = []
-    if frontmatter.get("description"):
-        auto_lines.append(frontmatter["description"])
-    if frontmatter.get("note"):
-        auto_lines.append(f"*{frontmatter['note']}*")
-    if auto_lines:
-        auto_lines.append("")
-    auto_lines.append("## 등장 논문")
+    # 본문(자동 생성 영역)은 제목 -> 다른 표기 -> 카테고리(concept만) -> 등장 논문
+    # -> (있으면) --- 구분선 + AI 설명 순으로 고정된 순서로 쓴다. Obsidian에서
+    # frontmatter Properties 패널을 열지 않고 파일만 봐도 핵심 정보가 위에서부터
+    # 순서대로 읽히게 하려는 의도다 - static/graph.js의 openNodeView()는 이
+    # 순서를 알고 제목/다른 표기/카테고리/등장 논문 줄을 걷어내고 실제 논문 목록
+    # (클릭 가능한 링크)부터 보여준다 - 제목/다른 표기/카테고리/등장 논문 수는
+    # 이미 위쪽 메타 행(.node-view-aliases 등, 통일된 색상)으로 따로 보여주므로.
+    aliases = frontmatter.get("aliases") or []
+    auto_lines = [f"# {frontmatter['display_label']}", "", f"**다른 표기**: {', '.join(aliases) if aliases else '없음'}"]
+    if frontmatter.get("type") == "concept":
+        categories = frontmatter.get("categories") or []
+        auto_lines += ["", f"**카테고리**: {', '.join(categories) if categories else '없음'}"]
+    auto_lines += ["", f"**등장 논문** {len(frontmatter['sources'])}편"]
     for src in frontmatter["sources"]:
         auto_lines.append(f"- [[{src['slug']}|{src['title']}]]")
+
+    # description/note는 논문 노트의 레퍼런스 표에 있던 설명을 그대로 복사해온 것 -
+    # 최초 생성 시에만 채워지므로 없을 수도 있다(그 이전에 만들어진 노드, 혹은 값을
+    # 안 넘긴 호출부). 있을 때만 구분선과 함께 덧붙인다.
+    description_lines = []
+    if frontmatter.get("description"):
+        description_lines.append(frontmatter["description"])
+    if frontmatter.get("note"):
+        description_lines.append(f"*{frontmatter['note']}*")
+    if description_lines:
+        auto_lines += ["", "---", ""] + description_lines
     auto_section = "\n".join(auto_lines)
 
     content = (
         f"---\n{frontmatter_yaml}\n---\n\n"
         f"{_AUTO_MARKER}\n\n{auto_section}\n\n"
-        f"{_USER_MARKER}\n{user_section}"
+        f"---\n\n{_USER_MARKER}\n{user_section}"
     )
     path.write_text(content, encoding="utf-8")
 

@@ -188,7 +188,10 @@ body.graph-expanded #graphSummary {
   border-radius: 8px; overflow-x: auto; display: flex; justify-content: center;
 }
 
-.node-view-usernotes { margin-top: 28px; padding-top: 16px; border-top: 1px solid var(--border); }
+/* concept/entity 노드 파일 자체에 이미 AI 설명과 사용자 메모 사이 구분선(---)이
+   있어(node_store._write_node_file) 본문이 그 <hr>을 렌더링한다 - 여기서
+   border-top까지 또 그으면 구분선이 두 줄로 겹쳐 보인다. 간격만 유지한다. */
+.node-view-usernotes { margin-top: 28px; padding-top: 16px; }
 /* Obsidian의 "클릭하면 바로 편집" 느낌을 내려고, 메모가 비어있을 때도 렌더링
    영역 전체가 클릭 가능한 영역임을 hover로 알려준다. 편집 중(.node-view-usernotes-editing)엔
    hover 강조 대신 입력 필드처럼 보이는 테두리로 "지금 편집 중"임을 보여준다. */

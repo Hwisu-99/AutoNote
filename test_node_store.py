@@ -333,7 +333,7 @@ def test_update_user_section_replaces_only_user_part() -> None:
 
         path = Path(tmp) / "_concepts" / f"{slug}.md"
         text = path.read_text(encoding="utf-8")
-        check("자동 생성 영역(등장 논문)은 그대로 남아있음", "paper-a" in text and "## 등장 논문" in text)
+        check("자동 생성 영역(등장 논문)은 그대로 남아있음", "paper-a" in text and "**등장 논문**" in text)
 
         update_user_section(tmp, "concept", slug, "메모를 덮어씀")
         check("두 번째 저장이 이전 메모를 완전히 대체함", get_user_section(tmp, "concept", slug) == "메모를 덮어씀")
