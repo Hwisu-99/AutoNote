@@ -64,7 +64,6 @@ paper_notes/
   extractor.py                 # PDF -> text (PyMuPDF)
   claude_client.py              # Claude call, structured summary, per-model cost calculation
   obsidian_writer.py            # writes the Markdown note (incl. concept wikilinks)
-  excalidraw_writer.py          # writes the .excalidraw concept diagram
   graph_builder.py              # scans the vault and builds graph nodes/edges
   dedup.py                      # MinHash-based near-duplicate merging for concept/entity labels
   supabase_writer.py             # Supabase Storage upload/list

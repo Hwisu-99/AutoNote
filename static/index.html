@@ -183,7 +183,7 @@
 </aside>
 <main>
   <div class="eyebrow">AutoNote</div>
-  <p class="subtitle">PDF를 올리면 Claude가 읽고 구조화된 요약 노트와 Excalidraw 개념도를 만들어 vault에 저장합니다.</p>
+  <p class="subtitle">PDF를 올리면 Claude가 읽고 구조화된 요약 노트를 만들어 vault에 저장합니다.</p>
 
   <div id="dropzone">
     <div class="dz-icon">
@@ -386,7 +386,6 @@ async function handleFile(file) {
               <strong>${evt.title}</strong>
               <p>${evt.tldr}</p>
               <div class="meta-row"><span>노트</span><code>${evt.note_path}</code></div>
-              <div class="meta-row"><span>개념도</span><code>${evt.excalidraw_filename}</code></div>
               <div class="meta-row"><span>API 비용</span><code>$${evt.api_cost_usd.toFixed(4)}</code></div>
               <div class="meta-row"><span>Supabase</span><code>${evt.supabase_path ? evt.supabase_path : ('업로드 실패: ' + evt.supabase_error)}</code></div>
               ${renderNodeSummaryRows(evt.node_summary)}

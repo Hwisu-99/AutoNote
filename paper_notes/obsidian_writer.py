@@ -14,15 +14,13 @@ def _table_cell(text: object) -> str:
     return str(text).replace("|", "\\|").replace("\n", " ").strip()
 
 
-def write_note(vault_path: str, summary: dict, title_slug: str, excalidraw_filename: str) -> str:
+def write_note(vault_path: str, summary: dict, title_slug: str) -> str:
     """요약 결과를 Obsidian vault의 논문별 폴더에 마크다운 노트로 저장하고, 저장된 파일 경로를 반환한다."""
     folder = Path(vault_path) / "AutoNote" / title_slug
     folder.mkdir(parents=True, exist_ok=True)
 
     filename = f"{title_slug}.md"
     note_path = folder / filename
-
-    tags = " ".join(f"#{t.replace(' ', '_')}" for t in summary.get("tags", []))
 
     concepts = summary.get("concepts", [])
     entities = summary.get("entities", [])
@@ -39,8 +37,12 @@ def write_note(vault_path: str, summary: dict, title_slug: str, excalidraw_filen
     }
     frontmatter_yaml = yaml.safe_dump(frontmatter, allow_unicode=True, sort_keys=False).strip()
 
+    # 저자/태그는 frontmatter(title/authors/tags)에 이미 있으므로 본문에서 다시
+    # 적지 않는다 - Obsidian의 Properties 패널과 AutoNote 자체 노트 뷰(graph.js의
+    # metaChips) 둘 다 frontmatter를 읽어 보여주므로, 본문에 같은 정보를 형식만
+    # 바꿔(언더스코어 치환 등) 또 적으면 그냥 중복 표시일 뿐이었다.
     source_meta = summary.get("source_meta", "").strip()
-    meta_line = f"*{source_meta}*\n" if source_meta else ""
+    meta_line = f"*{source_meta}*\n\n" if source_meta else ""
 
     problem_motivation = "\n".join(f"- {b}" for b in summary.get("problem_motivation", []))
 
@@ -89,10 +91,7 @@ def write_note(vault_path: str, summary: dict, title_slug: str, excalidraw_filen
 
 # {summary['title']}
 
-**저자**: {summary['authors']}
-{meta_line}{tags}
-
-> **TL;DR**: {summary['tldr']}
+{meta_line}> **TL;DR**: {summary['tldr']}
 
 ## 🎯 문제 정의 & 동기
 {problem_motivation}
@@ -102,9 +101,6 @@ def write_note(vault_path: str, summary: dict, title_slug: str, excalidraw_filen
 
 ## 🔧 핵심 개념 / 사용 기술
 {reference_table}
-
-## 개념도
-![[{excalidraw_filename}]]
 
 ## 🔬 핵심 개념 풀어보기
 {deep_dive_body}

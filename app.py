@@ -17,7 +17,6 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from paper_notes.claude_client import summarize_paper
-from paper_notes.excalidraw_writer import write_diagram
 from paper_notes.extractor import extract_text
 from paper_notes.graph_builder import build_graph
 from paper_notes.node_store import (
@@ -193,11 +192,8 @@ async def run_pipeline(tmp_path: str, vault_path: str, request: Request, overwri
         except Exception as exc:  # noqa: BLE001 - 노드 파일 갱신 실패가 파이프라인 전체를 막지 않음
             print(f"  [경고] concept/entity 노드 파일 갱신 실패: {exc}")
 
-        yield _event("diagram", 70, "Excalidraw 개념도 생성 중...")
-        excalidraw_filename = write_diagram(vault_path, title_slug, summary)
-
         yield _event("note", 90, "Obsidian 노트 저장 중...")
-        note_path = write_note(vault_path, summary, title_slug, excalidraw_filename)
+        note_path = write_note(vault_path, summary, title_slug)
 
         focus_graph = build_graph(vault_path, title_slug, only_focus=True)
         node_summary: dict[str, list[str]] = {}
@@ -217,7 +213,6 @@ async def run_pipeline(tmp_path: str, vault_path: str, request: Request, overwri
             "title": summary["title"],
             "tldr": summary["tldr"],
             "note_path": note_path,
-            "excalidraw_filename": excalidraw_filename,
             "api_cost_usd": round(api_cost_usd, 4),
             "supabase_path": supabase_path,
             "supabase_error": supabase_error,
