@@ -353,10 +353,19 @@ function renderGraph(data) {
   const edgeNodeIds = new Set();
   visibleEdges.forEach((e) => { edgeNodeIds.add(e.source); edgeNodeIds.add(e.target); });
 
-  // 이제 논문에 실제로 연결된(에지가 생긴) 노드는 더 이상 orphan이 아니니 앵커가
-  // 필요 없다 - forceLink가 알아서 그 논문 쪽으로 끌어당긴다.
+  // "진짜"(그 자신도 앵커가 없는) 노드에 실제로 연결된 노드만 더 이상 orphan이
+  // 아니다 - forceLink가 알아서 그쪽으로 끌어당긴다. 앵커끼리(둘 다 orphan)만
+  // 서로 연결된 경우(orphan entity를 orphan concept으로 드래그해 붙이는 등)는
+  // 둘 다 여전히 진짜 그래프에는 안 붙어있으므로 앵커를 유지한다 - 안 그러면
+  // 한쪽만 물리 시뮬레이션에 풀려나(charge -160로 반발) 나머지 그래프 전체의
+  // 반발력에 밀려 원래 있던 자리에서 한참 먼 곳으로 튕겨나간다.
   for (const id of [..._orphanAnchors.keys()]) {
-    if (edgeNodeIds.has(id)) _orphanAnchors.delete(id);
+    const hasRealNeighbor = visibleEdges.some((e) => {
+      if (e.source !== id && e.target !== id) return false;
+      const other = e.source === id ? e.target : e.source;
+      return !_orphanAnchors.has(other);
+    });
+    if (hasRealNeighbor) _orphanAnchors.delete(id);
   }
 
   // _orphanAnchors는 브라우저 메모리에만 있어 새로고침/서버 재시작으로 사라진다 -
@@ -377,12 +386,20 @@ function renderGraph(data) {
     if (_pendingSpawnPosition?.id === n.id) {
       return { ...n, x: _pendingSpawnPosition.x, y: _pendingSpawnPosition.y };
     }
+    const pos = _nodePositions.get(n.id);
     if (!edgeNodeIds.has(n.id) && !_orphanAnchors.has(n.id)) {
       // 앵커도 없고(우클릭 생성이 아니었거나 이미 지워짐) 방금 만든 것도 아닌
       // 에지 없는 노드는, 마지막으로 알려진 자리에 그대로 고정해서 큰 그래프가
       // 다시 자리잡는 동안 밀려나지 않게 한다.
-      const pos = _nodePositions.get(n.id);
       if (pos) return { ...n, x: pos.x, y: pos.y, fx: pos.x, fy: pos.y };
+    } else if (pos) {
+      // 에지가 있거나(논문/태그 등 "진짜" 노드) 앵커가 있는 노드도 마지막으로
+      // 알려진 자리를 시작 위치로 물려받는다(고정은 안 함 - 힘 시뮬레이션은
+      // 계속 작동해야 하므로). 이게 없으면 그래프를 다시 그릴 때마다(예: orphan
+      // 하나 새로 만들기만 해도 전체 reload가 일어남) "진짜" 노드들이 위치 힌트
+      // 없이 처음부터 다시 자리잡느라 화면 전체가 크게 출렁이고, 그 사이 이
+      // 노드를 앵커로 삼은 orphan도 덩달아 멀리 끌려다니게 된다.
+      return { ...n, x: pos.x, y: pos.y };
     }
     return { ...n };
   });
@@ -484,7 +501,13 @@ function renderGraph(data) {
       const paperIds = [...new Set(
         data.edges.filter((e) => e.type === 'link' && e.target === target.id).map((e) => e.source)
       )].filter((id) => data.nodes.some((n) => n.id === id && n.type === 'note'));
-      if (!paperIds.length) return; // orphan concept(연결된 논문 없음) - 붙일 paper_slug가 없어 연결 불가
+
+      // orphan concept(연결된 논문이 하나도 없음) - 붙일 논문이 없으니 논문 없이
+      // concept_slug만으로 연결한다(node_store.link_node_to_paper 참고).
+      if (!paperIds.length) {
+        await callLinkApi('entity', source.node_slug, null, target.node_slug);
+        return;
+      }
 
       if (paperIds.length === 1) {
         await callLinkApi('entity', source.node_slug, paperIds[0], target.node_slug);
@@ -1052,7 +1075,7 @@ async function openNodeView(type, slug, fallbackLabel) {
     ${editable ? `
       <div class="node-view-aliases">
         <span class="node-view-aliases-label">등장 논문</span>
-        <span>${(data.meta.sources || []).length}편</span>
+        <span>${(data.meta.sources || []).filter((s) => s.slug).length}편</span>
       </div>
     ` : ''}
     ${data.type === 'note' ? `

@@ -363,9 +363,17 @@ def _write_node_file(path: Path, frontmatter: dict, user_section: str) -> None:
     if frontmatter.get("type") == "concept":
         categories = frontmatter.get("categories") or []
         auto_lines += ["", f"**카테고리**: {', '.join(categories) if categories else '없음'}"]
-    auto_lines += ["", f"**등장 논문** {len(frontmatter['sources'])}편"]
+    # entity의 sources 항목은 논문 없이(slug/title 없이) concept_slug만 있을 수도
+    # 있다(orphan concept에 orphan entity를 직접 붙인 경우) - "등장 논문" 개수는
+    # 그 항목을 빼고 진짜 논문만 센다(라벨 그대로의 뜻을 지키기 위해), 목록
+    # 줄에는 위키링크 대신 문구로 표시한다.
+    paper_sources = [s for s in frontmatter["sources"] if s.get("slug")]
+    auto_lines += ["", f"**등장 논문** {len(paper_sources)}편"]
     for src in frontmatter["sources"]:
-        auto_lines.append(f"- [[{src['slug']}|{src['title']}]]")
+        if src.get("slug"):
+            auto_lines.append(f"- [[{src['slug']}|{src['title']}]]")
+        else:
+            auto_lines.append("- (논문 없음 - concept에 직접 연결됨)")
 
     # description/note는 논문 노트의 레퍼런스 표에 있던 설명을 그대로 복사해온 것 -
     # 최초 생성 시에만 채워지므로 없을 수도 있다(그 이전에 만들어진 노드, 혹은 값을
@@ -768,24 +776,48 @@ def _create_node(
 
 
 def link_node_to_paper(
-    store_root: str, node_type: str, node_slug: str, paper_slug: str, paper_title: str,
+    store_root: str, node_type: str, node_slug: str, paper_slug: str | None, paper_title: str | None,
     concept_slug: str | None = None,
 ) -> None:
     """이미 존재하는(orphan이든 아니든) concept/entity 노드 파일의 sources[]에 논문을
-    하나 추가한다. _update_node()가 하는 일 중 sources 갱신 부분만 떼어낸 것과 같다 -
+    연결한다. _update_node()가 하는 일 중 sources 갱신 부분만 떼어낸 것과 같다 -
     라벨/alias 재매칭은 하지 않는다(호출부가 이미 정확히 어느 노드인지 slug로 알고
     있으므로 다시 퍼지 매칭할 이유가 없다). 그래프에서 노드를 다른 노드로 드래그해
     연결하는 제스처가 이 함수를 쓴다.
 
     concept_slug는 entity를 concept으로 드래그해 연결하는 경우에만 쓴다 - 이
-    논문에서는 그 concept 밑에 묶인다는 걸 sources 항목에 기록한다."""
+    논문에서는 그 concept 밑에 묶인다는 걸 sources 항목에 기록한다.
+
+    paper_slug/paper_title은 None일 수 있다 - orphan concept(아직 어떤 논문과도
+    연결 안 됨)에 orphan entity를 드래그해 붙이는 경우, 근거로 삼을 논문 자체가
+    없기 때문이다. 이때는 sources에 slug/title 없이 concept_slug만 있는 항목이
+    생긴다("논문과 무관하게 이 concept에 속한다"는 뜻) - graph_builder.py는
+    concept_slug만 유효하면 논문 유무와 무관하게 concept->entity 에지를 만들므로
+    이 항목만으로도 그래프에 정상적으로 나타난다. paper_slug=None인 호출이
+    여러 번 있어도(다른 논문 없는 concept에 또 붙이는 등) 같은 슬롯(slug=None)을
+    덮어써 항목이 하나로 유지된다 - "논문 없는 연결"은 개념상 한 번에 하나만
+    의미가 있다.
+
+    호출부(app.py)가 node_type이 entity이고 concept_slug가 있을 때만
+    paper_slug=None을 허용한다 - concept 자신은 논문 없이 다른 무언가에
+    "연결"될 방법이 없다(concept_slug 같은 자기 필드가 없음).
+
+    이 논문이 sources에 이미 있어도(entity가 이 논문에 concept 없이 직접
+    연결돼 있던 경우 등) 그 항목의 concept_slug를 이번 호출값으로 덮어쓴다 -
+    "이미 있으니 그냥 둔다"로 처리하면, LLM이 같은 논문에서 뽑은 entity/concept을
+    사용자가 나중에 드래그로 이어주려 해도(entity->note, concept->note를
+    entity->concept->note로 바꾸는, 실제로 자주 나올 케이스) 아무 반응이 없는
+    것처럼 보이는 채로 조용히 무시되는 버그가 있었다."""
     path = _node_dir(store_root, node_type) / f"{node_slug}.md"
     if not path.is_file():
         raise FileNotFoundError(f"노드 파일을 찾을 수 없습니다: {node_slug}")
     frontmatter = _read_frontmatter(path)
     sources = frontmatter.get("sources") or []
-    if not any(s.get("slug") == paper_slug for s in sources):
+    existing = next((s for s in sources if s.get("slug") == paper_slug), None)
+    if existing is None:
         sources.append({"slug": paper_slug, "title": paper_title, "concept_slug": concept_slug})
+    else:
+        existing["concept_slug"] = concept_slug
     frontmatter["sources"] = sources
     # 실제로 논문에 연결됐으니 이제 orphan이 아니다 - 그래프가 더 이상 anchor_id를
     # 안 쓰긴 하지만(sources가 있으면 무시함), frontmatter에 죽은 값으로 계속
@@ -793,6 +825,41 @@ def link_node_to_paper(
     frontmatter["anchor_id"] = None
     user_section = _extract_user_section(path)
     _write_node_file(path, frontmatter, user_section)
+
+    # concept이 (논문 없이 붙어 있던 orphan 상태에서) 방금 진짜 논문에 연결됐으면,
+    # 그 concept에 "논문 없이" 붙어 있던 entity들도 같은 논문을 근거로 갖게
+    # 해준다 - 안 그러면 entity->concept 관계는 있는데 그 관계가 어느 논문에서
+    # 나온 건지는 영영 알 수 없는 채로 남는다.
+    if node_type == "concept" and paper_slug is not None:
+        _propagate_paper_to_paperless_entities(store_root, node_slug, paper_slug, paper_title)
+
+
+def _propagate_paper_to_paperless_entities(
+    store_root: str, concept_slug: str, paper_slug: str, paper_title: str
+) -> None:
+    """concept이 논문에 연결될 때, 그 concept에 concept_slug로만(논문 없이)
+    묶여 있던 entity들의 해당 source 항목에 이번 논문을 채워 넣는다 -
+    link_node_to_paper()가 concept 타입 호출 끝에서 쓴다. entity 쪽이 이미
+    이 논문을 다른 source로 갖고 있으면 건드리지 않는다(그 항목은 별개의
+    실제 등장 기록)."""
+    candidates = [
+        n["slug"] for n in list_nodes(store_root, "entity")
+        if any(s.get("concept_slug") == concept_slug and not s.get("slug") for s in (n.get("sources") or []))
+    ]
+    for entity_slug in candidates:
+        path = _node_dir(store_root, "entity") / f"{entity_slug}.md"
+        frontmatter = _read_frontmatter(path)
+        sources = frontmatter.get("sources") or []
+        changed = False
+        for s in sources:
+            if s.get("concept_slug") == concept_slug and not s.get("slug"):
+                s["slug"] = paper_slug
+                s["title"] = paper_title
+                changed = True
+        if changed:
+            frontmatter["sources"] = sources
+            user_section = _extract_user_section(path)
+            _write_node_file(path, frontmatter, user_section)
 
 
 def add_alias(store_root: str, node_type: str, slug: str, alias: str) -> list[str]:
@@ -905,11 +972,15 @@ def _update_node(
     frontmatter["aliases"] = sorted(existing_aliases)
 
     sources = frontmatter.get("sources") or []
-    # 같은 논문이 이미 sources에 있으면(재처리 등) 다시 추가하지 않는다 - 재처리
-    # 시에는 remove_source()가 먼저 옛 참조를 지우므로, "같은 논문인데 concept_slug만
-    # 다르게 다시 들어오는" 충돌은 실제로 발생하지 않는다.
-    if not any(s["slug"] == source_slug for s in sources):
+    # 같은 논문이 이미 sources에 있으면(재처리 등) 새로 추가하는 대신 그 항목의
+    # concept_slug를 이번 값으로 덮어쓴다 - link_node_to_paper()와 같은 이유
+    # (그 주석 참고). 재처리 시엔 remove_source()가 먼저 옛 참조를 지우니 보통
+    # 이 분기를 안 타지만, 그것과 무관하게 항상 안전하게 동작해야 한다.
+    existing = next((s for s in sources if s["slug"] == source_slug), None)
+    if existing is None:
         sources.append({"slug": source_slug, "title": source_title, "concept_slug": concept_slug})
+    else:
+        existing["concept_slug"] = concept_slug
     frontmatter["sources"] = sources
 
     user_section = _extract_user_section(path)

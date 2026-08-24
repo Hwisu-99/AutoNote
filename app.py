@@ -463,7 +463,7 @@ async def create_orphan_node(payload: _CreateOrphanNodePayload):
 
 
 class _LinkNodePayload(BaseModel):
-    paper_slug: str
+    paper_slug: str | None = None
     concept_slug: str | None = None
 
 
@@ -471,9 +471,25 @@ class _LinkNodePayload(BaseModel):
 async def link_node(node_type: str, slug: str, payload: _LinkNodePayload):
     """그래프에서 concept/entity 노드(orphan이든 이미 다른 논문에 연결돼 있던 것이든)를
     다른 논문 위로 드래그해서 연결할 때 호출된다. node_store가 유일한 소스라
-    노드 파일의 sources[]만 갱신하면 된다(논문 쪽엔 더 이상 쓸 게 없음)."""
+    노드 파일의 sources[]만 갱신하면 된다(논문 쪽엔 더 이상 쓸 게 없음).
+
+    paper_slug가 없으면(orphan concept에 orphan entity를 직접 붙이는 경우 -
+    붙일 논문 자체가 없음) entity를 concept_slug로만 연결한다. concept 자신은
+    이 경로를 쓸 수 없다(concept은 논문 없이 다른 무언가에 "연결"될 방법이
+    없음 - concept_slug 같은 자기 필드가 없다)."""
     if node_type not in ("concept", "entity"):
         raise HTTPException(status_code=404, detail="알 수 없는 노드 타입입니다.")
+
+    if payload.paper_slug is None:
+        if node_type != "entity" or not payload.concept_slug:
+            raise HTTPException(
+                status_code=400, detail="paper_slug 없이는 entity를 concept_slug로만 연결할 수 있습니다."
+            )
+        try:
+            link_node_to_paper(NODE_STORE_ROOT, node_type, slug, None, None, concept_slug=payload.concept_slug)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"ok": True}
 
     vault_path = get_vault_path()
     note_path = Path(vault_path) / "AutoNote" / payload.paper_slug / f"{payload.paper_slug}.md"
