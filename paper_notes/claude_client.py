@@ -170,13 +170,24 @@ SCHEMA = {
                 "이 논문이 스스로 제시하는 핵심 개념만 3~6개. 논문이 해결하려는 핵심 문제, "
                 "독자적으로 제안하는 아키텍처/방법론, 주요 기여점만 포함할 것. 기존 연구/"
                 "베이스라인/관련 연구에서 유래한 개념은 아무리 비중 있게 다뤄져도 절대 포함하지 "
-                "말 것(그건 entities로 처리한다). 각 label은 원문 표현을 최대한 그대로 사용할 것."
+                "말 것(그건 entities로 처리한다). 각 label은 원문에 등장하는 영문 표현을 최대한 "
+                "그대로 사용하되, 원문이 한국어이거나 정확히 일치하는 영문 표현이 없으면 그 "
+                "분야에서 통용되는 영문 용어로 옮길 것(label 필드 자체의 지침 참고)."
             ),
             "items": {
                 "type": "object",
                 "properties": {
                     "id": {"type": "string"},
-                    "label": {"type": "string", "description": "20자 이내로 짧게"},
+                    "label": {
+                        "type": "string",
+                        "description": (
+                            "20자 이내로 짧게. 반드시 영문으로 쓸 것(slug와 그래프 노드 표시 "
+                            "이름으로 그대로 쓰이므로, 논문이 한국어 표현으로만 설명하는 개념도 "
+                            "그 분야에서 통용되는 영문 용어로 옮길 것 - 예: 원문이 '깊이 축 "
+                            "attention 기법'이면 label은 'Depth-wise Attention'). description/note는 "
+                            "지침대로 한국어 유지."
+                        ),
+                    },
                     "category": {
                         "type": "string",
                         "enum": CONCEPT_CATEGORIES,
@@ -242,14 +253,24 @@ SCHEMA = {
                 "모듈·알고리즘·데이터셋·평가지표·하이퍼파라미터, 그리고 이 논문이 비교·개선 "
                 "대상으로 삼는 선행 연구의 개념·모델·프레임워크명을 최대 15개까지 뽑을 것 "
                 "(논문에 그만큼 없다면 억지로 채우지 말 것). 각 label은 논문 원문에 실제로 "
-                "등장하는 표현만 사용하고 지어내거나 일반화하지 말 것. concept_id를 지정하면 "
+                "등장하는 영문 표현만 사용하고 지어내거나 일반화하지 말 것 - 원문이 한국어이거나 "
+                "정확히 일치하는 영문 표현이 없으면 그 분야에서 통용되는 영문 용어로 옮길 것 "
+                "(label 필드 자체의 지침 참고). concept_id를 지정하면 "
                 "주어진 concept 목록의 해당 id와 연결되고, 특정 concept에 속하지 않는 독립적인 "
                 "용어면 concept_id를 null로 둘 것."
             ),
             "items": {
                 "type": "object",
                 "properties": {
-                    "label": {"type": "string", "description": "15자 이내로 짧게"},
+                    "label": {
+                        "type": "string",
+                        "description": (
+                            "15자 이내로 짧게. 반드시 영문으로 쓸 것(slug와 그래프 노드 표시 "
+                            "이름으로 그대로 쓰이므로, 논문 본문이 한국어 설명으로만 언급하는 "
+                            "용어도 그 분야에서 통용되는 영문 용어로 옮길 것). description/note는 "
+                            "지침대로 한국어 유지."
+                        ),
+                    },
                     "concept_id": {
                         "anyOf": [{"type": "string"}, {"type": "null"}],
                         "description": "주어진 concept 목록의 id 중 하나. 없으면 null",
