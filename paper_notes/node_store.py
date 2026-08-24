@@ -55,6 +55,18 @@ _ATTACHMENTS_DIR_BY_TYPE = {"concept": "concepts", "entity": "entities"}
 # 노드로 만들 때 같은 확장자 목록을 써야 하므로 공개 상수로 둔다.
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 
+# concept 노드의 카테고리 통제 어휘(controlled vocabulary). claude_client.py의
+# SCHEMA가 이 목록을 그대로 가져다 써서 LLM 출력과 사용자가 add_category()로
+# 직접 추가할 수 있는 값의 범위가 항상 일치하게 한다 - 자유 텍스트로 두면
+# "Optimization"/"optimization"처럼 표기만 다른 카테고리가 늘어나 필터링 의미가
+# 없어진다(예전 category 필드가 실제로 이 문제를 겪었다: null 42개, process
+# 17개로 사실상 두 값으로만 수렴).
+CONCEPT_CATEGORIES = [
+    "problem", "proposed_method", "architecture", "algorithm", "theory",
+    "optimization", "training_strategy", "evaluation_setup", "finding",
+    "input_representation", "limitation", "other",
+]
+
 # 노드 파일이 실제로 저장되는 기본 위치: 이 프로젝트 폴더(paper_notes/의 부모).
 # resolve_or_create_node 등은 store_root를 인자로 받으므로(테스트에서는 임시
 # 디렉터리를 대신 넘겨 격리한다), 실제 호출부(app.py 등)에서 이 상수를 쓴다.
@@ -662,6 +674,31 @@ def set_source_concept_slug(store_root: str, entity_slug: str, paper_slug: str, 
     return True
 
 
+def migrate_category_field(store_root: str) -> list[str]:
+    """concept 노드의 예전 category(단수, str|None) 필드를 categories(리스트)로
+    옮긴다. migrate_concept_categories.py(1회성 마이그레이션)가 쓴다.
+
+    예전 값을 새 CONCEPT_CATEGORIES 어휘로 재해석하지 않고 그대로 리스트에 담아
+    보존한다 - 예전 5개 카테고리(input/process/result/limitation/other)와 지금
+    12개 카테고리는 이름 체계가 달라서(예: "process" 하나가 지금은 architecture/
+    algorithm/theory/proposed_method/training_strategy 여러 개로 나뉨) 자동으로
+    정확히 재분류할 근거가 없다 - 그 논문을 다시 봐야 판단할 수 있는 일이라
+    사용자가 add_category()/remove_category()로 나중에 직접 정리하도록 남겨둔다.
+    이미 categories 필드로 이관된 노드는 건드리지 않아(idempotent), 여러 번
+    실행해도 안전하다. 이관된 concept slug 목록을 반환한다."""
+    migrated: list[str] = []
+    for path in sorted(_node_dir(store_root, "concept").glob("*.md")):
+        frontmatter = _read_frontmatter(path)
+        if not frontmatter.get("slug") or "categories" in frontmatter:
+            continue
+        category = frontmatter.pop("category", None)
+        frontmatter["categories"] = [category] if category else []
+        user_section = _extract_user_section(path)
+        _write_node_file(path, frontmatter, user_section)
+        migrated.append(frontmatter["slug"])
+    return migrated
+
+
 def _create_node(
     store_root: str,
     node_type: str,
@@ -691,7 +728,11 @@ def _create_node(
         "created_at": _now_iso(),
     }
     if node_type == "concept":
-        frontmatter["category"] = category
+        # LLM(또는 수동 생성 시 사용자)이 고른 초기 카테고리 하나로 시작하되,
+        # 필드 자체는 리스트다 - 한 concept이 여러 관점(예: proposed_method이면서
+        # architecture)에 걸칠 수 있고, 사용자가 add_category()/remove_category()로
+        # 나중에 자유롭게 보정할 수 있어야 하기 때문이다.
+        frontmatter["categories"] = [category] if category else []
     _write_node_file(path, frontmatter, user_section="")
     return slug
 
@@ -778,6 +819,46 @@ def remove_alias(store_root: str, node_type: str, slug: str, alias: str) -> list
     user_section = _extract_user_section(path)
     _write_node_file(path, frontmatter, user_section)
     return aliases
+
+
+def add_category(store_root: str, slug: str, category: str) -> list[str]:
+    """사용자가 concept 화면에서 직접 카테고리를 추가한다. LLM이 매긴 카테고리가
+    항상 사용자 마음에 들 리 없고(모호한 개념은 여러 관점에 동시에 걸칠 수도
+    있음), concept 하나가 categories 리스트로 여러 값을 가질 수 있게 한다.
+    CONCEPT_CATEGORIES에 없는 값은 막는다 - alias와 달리 category는 통제 어휘라,
+    자유 텍스트를 허용하면 표기만 다른 카테고리가 계속 늘어나 필터링 의미가
+    없어진다(예전 단일 category 필드가 실제로 이 문제를 겪었다). 갱신된
+    categories 목록을 반환한다."""
+    if category not in CONCEPT_CATEGORIES:
+        raise ValueError(f"'{category}'는 올바른 카테고리가 아닙니다.")
+
+    path = _node_dir(store_root, "concept") / f"{slug}.md"
+    frontmatter = _read_frontmatter(path)
+    if not frontmatter.get("slug"):
+        raise FileNotFoundError(f"노드 파일을 찾을 수 없습니다: {slug}")
+
+    categories = frontmatter.get("categories") or []
+    if category not in categories:
+        categories.append(category)
+    frontmatter["categories"] = categories
+    user_section = _extract_user_section(path)
+    _write_node_file(path, frontmatter, user_section)
+    return categories
+
+
+def remove_category(store_root: str, slug: str, category: str) -> list[str]:
+    """사용자가 concept 화면에서 직접 카테고리를 지운다 - LLM이 잘못 매긴
+    카테고리를 바로잡을 수 있게 한다. 갱신된 categories 목록을 반환한다."""
+    path = _node_dir(store_root, "concept") / f"{slug}.md"
+    frontmatter = _read_frontmatter(path)
+    if not frontmatter.get("slug"):
+        raise FileNotFoundError(f"노드 파일을 찾을 수 없습니다: {slug}")
+
+    categories = [c for c in (frontmatter.get("categories") or []) if c != category]
+    frontmatter["categories"] = categories
+    user_section = _extract_user_section(path)
+    _write_node_file(path, frontmatter, user_section)
+    return categories
 
 
 def _update_node(

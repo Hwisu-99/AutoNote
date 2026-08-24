@@ -2,6 +2,15 @@
 // /api/graph 결과를 d3-force로 렌더링한다. index.html/papers.js에서
 // `loadGraph(titleSlug, onlyFocus)`만 호출하면 되도록 전역 함수로 노출한다.
 
+// paper_notes/node_store.py의 CONCEPT_CATEGORIES와 반드시 같은 목록을 유지해야
+// 한다 - 서버가 이 목록 밖의 값을 add_category()에서 거부하므로, 프론트도 같은
+// 선택지만 보여줘야 "선택했는데 서버가 거부하는" 혼란이 없다.
+const CONCEPT_CATEGORIES = [
+  'problem', 'proposed_method', 'architecture', 'algorithm', 'theory',
+  'optimization', 'training_strategy', 'evaluation_setup', 'finding',
+  'input_representation', 'limitation', 'other',
+];
+
 const graphSvg = d3.select('#graphSvg');
 const graphTitleEl = document.getElementById('graphTitle');
 const btnFullGraph = document.getElementById('btnFullGraph');
@@ -992,7 +1001,6 @@ async function openNodeView(type, slug, fallbackLabel) {
     if (data.meta.authors) metaChips.push(`<span>저자: ${escapeHtml(data.meta.authors)}</span>`);
     if (data.meta.tags?.length) metaChips.push(`<span>${escapeHtml(data.meta.tags.map((t) => '#' + t).join(' '))}</span>`);
   } else {
-    if (data.meta.category) metaChips.push(`<span>카테고리: ${escapeHtml(data.meta.category)}</span>`);
     if (data.meta.sources?.length) metaChips.push(`<span>등장 논문 ${data.meta.sources.length}편</span>`);
   }
 
@@ -1024,6 +1032,14 @@ async function openNodeView(type, slug, fallbackLabel) {
       </div>
       <div id="addAliasContainer"></div>
     ` : ''}
+    ${data.type === 'concept' ? `
+      <div class="node-view-aliases">
+        <span class="node-view-aliases-label">카테고리</span>
+        <span id="nodeCategoryChips">${renderCategoryChips(data.meta.categories || [])}</span>
+        <button class="graph-btn" id="btnAddCategory">+ 카테고리</button>
+      </div>
+      <div id="addCategoryContainer"></div>
+    ` : ''}
     ${data.type === 'note' ? `
       <div class="node-view-side-panel">
         <button class="graph-btn" id="btnAddNodeToNote">+ 개념/엔티티 추가</button>
@@ -1053,6 +1069,7 @@ async function openNodeView(type, slug, fallbackLabel) {
 
   if (editable) wireUserNotesEditing(type, slug, userMarkdown, data.links);
   if (editable) wireAliasEditing(type, slug);
+  if (data.type === 'concept') wireCategoryEditing(slug, data.meta.categories || []);
 
   // concept/entity 노드는 (LLM이 뽑았든 사용자가 직접 만들었든) 삭제 가능 - 노드
   // 파일뿐 아니라 이 노드를 참조하던 논문들의 frontmatter까지 서버가 같이 정리한다.
@@ -1174,6 +1191,87 @@ function wireAliasEditing(type, slug) {
   });
 }
 
+function renderCategoryChips(categories) {
+  if (!categories.length) return '<span class="node-view-usernotes-empty">없음</span>';
+  return categories
+    .map((c) => `<span class="alias-chip">${escapeHtml(c)}<button type="button" class="alias-chip-remove" data-category="${escapeHtml(c)}" title="카테고리 삭제">×</button></span>`)
+    .join('');
+}
+
+// LLM이 매긴 카테고리가 항상 사용자 마음에 들 리 없고, 모호한 개념은 여러
+// 카테고리에 동시에 걸칠 수도 있어 concept 화면에서 직접 추가/삭제할 수 있게
+// 한다. alias와 달리 카테고리는 통제 어휘(CONCEPT_CATEGORIES)라 자유 텍스트
+// 입력 대신 드롭다운으로만 고르게 한다 - 표기만 다른 카테고리가 늘어나는 걸
+// 막기 위함(node_store.py의 add_category()도 이 목록 밖의 값을 거부한다).
+function wireCategoryEditing(slug, initialCategories) {
+  let categories = initialCategories;
+  const chipsEl = document.getElementById('nodeCategoryChips');
+  const addContainer = document.getElementById('addCategoryContainer');
+
+  chipsEl.addEventListener('click', async (event) => {
+    const btn = event.target.closest('.alias-chip-remove');
+    if (!btn) return;
+    try {
+      const res = await fetch(`/api/nodes/concept/${encodeURIComponent(slug)}/categories`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ category: btn.dataset.category }),
+      });
+      if (!res.ok) throw new Error();
+      ({ categories } = await res.json());
+      chipsEl.innerHTML = renderCategoryChips(categories);
+    } catch {
+      alert('카테고리 삭제에 실패했습니다.');
+    }
+  });
+
+  document.getElementById('btnAddCategory').addEventListener('click', () => {
+    if (addContainer.innerHTML.trim()) { addContainer.innerHTML = ''; return; } // 토글: 다시 누르면 닫힘
+    const remaining = CONCEPT_CATEGORIES.filter((c) => !categories.includes(c));
+    if (!remaining.length) {
+      addContainer.innerHTML = '<p class="node-view-usernotes-empty">이미 모든 카테고리가 추가되어 있습니다.</p>';
+      return;
+    }
+    addContainer.innerHTML = `
+      <div class="create-node-panel">
+        <div class="create-node-row">
+          <label>카테고리</label>
+          <select id="newCategoryInput">
+            ${remaining.map((c) => `<option value="${c}">${c}</option>`).join('')}
+          </select>
+        </div>
+        <div class="create-node-actions">
+          <button class="graph-btn" id="btnConfirmAddCategory">추가</button>
+          <button class="graph-btn" id="btnCancelAddCategory">취소</button>
+          <span class="node-view-edit-status" id="categoryAddStatus"></span>
+        </div>
+      </div>
+    `;
+    document.getElementById('btnCancelAddCategory').addEventListener('click', () => { addContainer.innerHTML = ''; });
+    document.getElementById('btnConfirmAddCategory').addEventListener('click', async () => {
+      const category = document.getElementById('newCategoryInput').value;
+      const statusEl = document.getElementById('categoryAddStatus');
+      statusEl.textContent = '추가 중...';
+      try {
+        const res = await fetch(`/api/nodes/concept/${encodeURIComponent(slug)}/categories`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ category }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(typeof err.detail === 'string' ? err.detail : '추가에 실패했습니다.');
+        }
+        ({ categories } = await res.json());
+        chipsEl.innerHTML = renderCategoryChips(categories);
+        addContainer.innerHTML = '';
+      } catch (err) {
+        statusEl.textContent = err.message;
+      }
+    });
+  });
+}
+
 // concept/entity 생성 POST 하나를 공용으로 처리한다 - 서버가 "완전히 같은 이름"이
 // 아니라 "비슷한 노드가 이미 있음"(409, detail.type === 'similar_exists')으로
 // 응답하면, 사용자에게 그대로 새로 만들지 물어보고(confirm) 그렇다면 같은 요청을
@@ -1250,11 +1348,7 @@ function openCreateNodePanel(container, config) {
           <div class="create-node-row">
             <label>카테고리</label>
             <select id="cnCategory">
-              <option value="input">input</option>
-              <option value="process">process</option>
-              <option value="result">result</option>
-              <option value="limitation">limitation</option>
-              <option value="other">other</option>
+              ${CONCEPT_CATEGORIES.map((c) => `<option value="${c}">${c}</option>`).join('')}
             </select>
           </div>
         ` : `

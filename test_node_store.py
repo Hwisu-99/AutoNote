@@ -46,7 +46,7 @@ def test_creates_new_node_on_first_mention() -> None:
 
         text = path.read_text(encoding="utf-8")
         check("frontmatter에 display_label 포함", 'display_label: Self-Attention' in text)
-        check("frontmatter에 category 포함", "category: process" in text)
+        check("frontmatter에 categories 리스트로 포함", "categories:\n- process" in text)
         check("본문에 출처 논문 링크 포함", "[[paper-a|Paper A]]" in text)
 
 

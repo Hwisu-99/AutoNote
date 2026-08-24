@@ -4,6 +4,8 @@ import json
 
 import anthropic
 
+from paper_notes.node_store import CONCEPT_CATEGORIES
+
 MODEL = "claude-sonnet-5"
 
 # USD per 1M tokens (input, output). claude-sonnet-5 uses intro pricing
@@ -177,10 +179,24 @@ SCHEMA = {
                     "label": {"type": "string", "description": "20자 이내로 짧게"},
                     "category": {
                         "type": "string",
-                        "enum": ["input", "process", "result", "limitation", "other"],
+                        "enum": CONCEPT_CATEGORIES,
                         "description": (
-                            "input=데이터/입력, process=방법론/모델 구성요소, "
-                            "result=결과/성과, limitation=한계/향후과제, other=기타"
+                            "problem=이 논문이 해결하려는 핵심 문제/현상/병목. "
+                            "proposed_method=논문이 새로 제안하는 핵심 방법/기법 그 자체(가장 "
+                            "상위 수준의 기여 - 예: 'Diffusion Policy', 'AttnRes'). "
+                            "architecture=그 방법을 구현하는 모델/시스템의 구조적 구성요소나 "
+                            "변형(예: 'Block AttnRes'). algorithm=구체적인 계산 절차/단계(예: "
+                            "'두 단계 계산 전략'). theory=방법을 뒷받침하는 이론적 근거/수학적 "
+                            "관점(예: '구조화된 행렬 관점'). optimization=효율성·확장성을 위한 "
+                            "기법(메모리/통신/속도, 예: 'Cross-stage Caching'). "
+                            "training_strategy=학습 절차나 전략(예: '보상 정규화'). "
+                            "evaluation_setup=검증을 위한 실험 설계/벤치마크 구성(예: 'Scaling "
+                            "Law 실험'). finding=실험으로 드러난 정량적/정성적 발견(예: '46.9% "
+                            "성능 향상'). input_representation=데이터/입력을 다루는 방식(예: "
+                            "'RLDS 표준 데이터 형식'). limitation=한계/향후과제. other=위 어디에도 "
+                            "안 맞는 것. proposed_method/architecture/algorithm/theory가 헷갈리면 "
+                            "\"이 개념이 논문의 핵심 기여 그 자체인가(proposed_method) 아니면 그걸 "
+                            "이루는 하위 요소인가(architecture/algorithm/theory)\"로 판단할 것."
                         ),
                     },
                     "aliases": {

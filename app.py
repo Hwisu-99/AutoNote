@@ -24,6 +24,7 @@ from paper_notes.node_store import (
     NODE_STORE_ROOT,
     DuplicateNodeError,
     add_alias,
+    add_category,
     create_node_manual,
     delete_node,
     find_entities_by_concept,
@@ -34,6 +35,7 @@ from paper_notes.node_store import (
     list_nodes,
     node_index,
     remove_alias,
+    remove_category,
     remove_source,
     resolve_or_create_node,
     save_attachment,
@@ -528,7 +530,7 @@ async def get_node(node_type: str, slug: str):
         "title": frontmatter.get("display_label") or slug,
         "meta": {
             "aliases": frontmatter.get("aliases") or [],
-            "category": frontmatter.get("category"),
+            "categories": frontmatter.get("categories") or [],
             "sources": frontmatter.get("sources") or [],
         },
         "body_markdown": body.strip(),
@@ -598,6 +600,35 @@ async def remove_node_alias(node_type: str, slug: str, payload: _AliasPayload):
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"aliases": aliases}
+
+
+class _CategoryPayload(BaseModel):
+    category: str
+
+
+@app.post("/api/nodes/concept/{slug}/categories")
+async def add_node_category(slug: str, payload: _CategoryPayload):
+    """사용자가 concept 화면에서 직접 카테고리를 추가한다 - LLM이 매긴 카테고리가
+    마음에 안 들거나, 한 concept이 여러 카테고리에 걸친다고 판단했을 때 보완한다.
+    갱신된 categories 목록을 반환한다."""
+    try:
+        categories = add_category(NODE_STORE_ROOT, slug, payload.category)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"categories": categories}
+
+
+@app.delete("/api/nodes/concept/{slug}/categories")
+async def remove_node_category(slug: str, payload: _CategoryPayload):
+    """사용자가 concept 화면에서 직접 카테고리를 지운다 - LLM이 잘못 매긴 카테고리를
+    바로잡을 수 있게 한다. 갱신된 categories 목록을 반환한다."""
+    try:
+        categories = remove_category(NODE_STORE_ROOT, slug, payload.category)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"categories": categories}
 
 
 @app.post("/api/nodes/{node_type}/{slug}/attachments")
