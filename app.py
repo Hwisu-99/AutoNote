@@ -11,7 +11,7 @@ from pathlib import Path
 
 import yaml
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -298,7 +298,9 @@ async def check_duplicate(file: UploadFile = File(...)):
 
 
 @app.get("/api/graph")
-async def get_graph(focus: str | None = None, only_focus: bool = False):
+async def get_graph(focus: list[str] = Query(default=[]), only_focus: bool = False):
+    """focus는 ?focus=a&focus=b처럼 여러 번 줄 수 있다 - 사이드바에서 여러 논문을
+    동시에 켜면(멀티 토글) 그 논문들의 focus 그래프를 합쳐서 보여준다."""
     vault_path = get_vault_path()
     return build_graph(vault_path, focus, only_focus)
 

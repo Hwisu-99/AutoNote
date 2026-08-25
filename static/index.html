@@ -75,6 +75,8 @@
     transition: background .15s ease, color .15s ease;
   }
   .paper-graph-btn:hover { background: var(--accent-soft); color: var(--accent); }
+  .paper-graph-btn.active { background: var(--accent); color: var(--surface); }
+  .paper-graph-btn.active:hover { background: var(--accent-hover, var(--accent)); }
   .paper-delete-btn {
     flex-shrink: 0; width: 26px; height: 26px; display: flex; align-items: center; justify-content: center;
     background: none; border: none; border-radius: 6px; color: var(--text-muted); cursor: pointer;
@@ -390,8 +392,8 @@ async function handleFile(file) {
               <div class="meta-row"><span>Supabase</span><code>${evt.supabase_path ? evt.supabase_path : ('업로드 실패: ' + evt.supabase_error)}</code></div>
               ${renderNodeSummaryRows(evt.node_summary)}
             </div>`;
-          loadGraph(evt.title_slug, false);
-          selectedPaperSlug = evt.title_slug;
+          loadGraph([], false);
+          selectedPaperSlugs.add(evt.title_slug);
           loadPaperList();
         } else {
           setProgress(evt.percent, evt.message);

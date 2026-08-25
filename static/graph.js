@@ -1,6 +1,8 @@
 // AutoNote 그래프 뷰: Obsidian 그래프 뷰와 같은 로직(노트=노드, [[위키링크]]/공통 tag=에지)으로
 // /api/graph 결과를 d3-force로 렌더링한다. index.html/papers.js에서
-// `loadGraph(titleSlug, onlyFocus)`만 호출하면 되도록 전역 함수로 노출한다.
+// `loadGraph(focusSlugs, onlyFocus)`만 호출하면 되도록 전역 함수로 노출한다.
+// focusSlugs는 논문 slug 배열(0개면 전체 그래프) - 사이드바에서 여러 논문을
+// 동시에 켜면(멀티 토글) 그 논문들의 focus 그래프가 합쳐져서 보인다.
 
 // paper_notes/node_store.py의 CONCEPT_CATEGORIES와 반드시 같은 목록을 유지해야
 // 한다 - 서버가 이 목록 밖의 값을 add_category()에서 거부하므로, 프론트도 같은
@@ -21,7 +23,7 @@ const toggleExpandInput = document.getElementById('toggleExpand');
 const graphColumnEl = document.querySelector('.graph-column');
 const graphPanelEl = document.getElementById('graphPanel');
 let simulation = null;
-let currentFocus = null;
+let currentFocusSlugs = [];
 let currentGraphData = null;
 let hideTagNodes = !toggleTagsInput.checked;
 let hideEntityNodes = !toggleEntitiesInput.checked;
@@ -71,7 +73,12 @@ function findNearestNodeId(x, y) {
   return bestId;
 }
 
-btnFullGraph.addEventListener('click', () => loadGraph(null, false));
+btnFullGraph.addEventListener('click', () => {
+  // 전체 그래프 보기는 사이드바에서 켜둔 논문 토글도 전부 끈다 - 안 그러면
+  // 사이드바는 "켜짐"으로 보이는데 그래프는 전체가 나오는 상태로 어긋난다.
+  window.clearSelectedPapers?.();
+  loadGraph([], false);
+});
 
 // 그래프 배경/노드 우클릭 시 뜨는 작은 플로팅 메뉴 (개념/엔티티 생성 2개, 또는 삭제
 // 1개). 화면 좌표(clientX/Y) 기준 position:fixed라 그래프 확대/축소·팬과 무관하게
@@ -169,7 +176,7 @@ function openOrphanCreatePanel(type, clientX, clientY, spawnX, spawnY, nearestNo
             _orphanAnchors.set(id, { anchorId: nearestNodeId, dx: spawnX - anchorPos.x, dy: spawnY - anchorPos.y });
           }
         }
-        await loadGraph(currentFocus, currentFocus !== null);
+        await loadGraph(currentFocusSlugs, currentFocusSlugs.length > 0);
       },
     });
   });
@@ -216,7 +223,7 @@ function openAutoConnectCreatePanel(type, prefillLabel, carrierOptions, clientX,
             y: carrierPos.y + (Math.random() - 0.5) * 50,
           };
         }
-        await loadGraph(currentFocus, currentFocus !== null);
+        await loadGraph(currentFocusSlugs, currentFocusSlugs.length > 0);
       },
     });
   });
@@ -241,7 +248,7 @@ document.getElementById('btnAddNode').addEventListener('click', async () => {
   openCreateNodePanel(container, {
     carrierOptions: papers,
     needsConcepts: true,
-    onCreated: () => loadGraph(currentFocus, currentFocus !== null),
+    onCreated: () => loadGraph(currentFocusSlugs, currentFocusSlugs.length > 0),
   });
 });
 
@@ -282,14 +289,15 @@ toggleExpandInput.addEventListener('change', () => {
   if (currentGraphData) renderGraph(currentGraphData);
 });
 
-async function loadGraph(focusSlug, onlyFocus = false) {
-  currentFocus = onlyFocus ? focusSlug : null;
+async function loadGraph(focusSlugs, onlyFocus = false) {
+  focusSlugs = focusSlugs ? (Array.isArray(focusSlugs) ? focusSlugs : [focusSlugs]) : [];
+  currentFocusSlugs = onlyFocus ? focusSlugs : [];
   if (!onlyFocus) {
     document.getElementById('graphSummary').innerHTML = '';
   }
 
   const params = new URLSearchParams();
-  if (focusSlug) params.set('focus', focusSlug);
+  for (const slug of focusSlugs) params.append('focus', slug);
   if (onlyFocus) params.set('only_focus', 'true');
   const qs = params.toString();
 
@@ -302,9 +310,12 @@ async function loadGraph(focusSlug, onlyFocus = false) {
     return;
   }
 
-  if (onlyFocus && data.focus) {
-    const node = data.nodes.find((n) => n.id === data.focus);
-    graphTitleEl.textContent = `${node ? node.label : data.focus} Knowledge Graph`;
+  if (onlyFocus && currentFocusSlugs.length) {
+    const labels = currentFocusSlugs.map((slug) => {
+      const node = data.nodes.find((n) => n.id === slug);
+      return node ? node.label : slug;
+    });
+    graphTitleEl.textContent = `${labels.join(', ')} Knowledge Graph`;
   } else {
     graphTitleEl.textContent = 'Knowledge Graph';
   }
@@ -379,13 +390,15 @@ function renderGraph(data) {
     }
   }
 
-  // 전체 그래프 뷰(currentFocus === null)는 노드가 훨씬 많아(수백 개) "진짜"
-  // 노드까지 이전 위치를 계속 이어받으면, 조작할 때마다(orphan 하나만 새로
-  // 만들어도 전체 reload가 일어남) 레이아웃이 조금씩 넓게 드리프트하다가 결국
-  // 팬 가능 범위(translateExtent) 밖으로 나가버린다 - 그래서 전체 뷰는 "진짜"
-  // 노드만큼은 매번 완전히 새로(d3 기본 초기 배치) 자리잡게 두고, 포커스 뷰
-  // (노드 수가 적어 드리프트가 문제되지 않음)에서만 이어받는다.
-  const isFullGraphView = currentFocus === null;
+  // 전체 그래프 뷰(currentFocusSlugs가 비어있음, 즉 켜진 논문 토글이 하나도
+  // 없음)는 노드가 훨씬 많아(수백 개) "진짜" 노드까지 이전 위치를 계속
+  // 이어받으면, 조작할 때마다(orphan 하나만 새로 만들어도 전체 reload가
+  // 일어남) 레이아웃이 조금씩 넓게 드리프트하다가 결국 팬 가능 범위
+  // (translateExtent) 밖으로 나가버린다 - 그래서 전체 뷰는 "진짜" 노드만큼은
+  // 매번 완전히 새로(d3 기본 초기 배치) 자리잡게 두고, 포커스 뷰(논문 토글이
+  // 하나 이상 켜진 상태, 노드 수가 적어 드리프트가 문제되지 않음)에서만
+  // 이어받는다.
+  const isFullGraphView = currentFocusSlugs.length === 0;
 
   // 방금 만든 노드(자동연결 포함)는 최초 한 프레임만 원하는 자리(우클릭 지점/carrier
   // 근처)에서 시작하게 한다 - 에지 유무와 무관하게 적용(자동연결 노드는 이미 에지가
@@ -543,7 +556,7 @@ function renderGraph(data) {
         body: JSON.stringify({ paper_slug: paperSlug, concept_slug: conceptSlug || null }),
       });
       if (!res.ok) throw new Error('link failed');
-      loadGraph(currentFocus, currentFocus !== null);
+      loadGraph(currentFocusSlugs, currentFocusSlugs.length > 0);
     } catch {
       alert('연결에 실패했습니다.');
     }
@@ -1023,7 +1036,7 @@ async function deleteNodeWithConfirm(type, slug, title, onBeforeReload) {
     const res = await fetch(`/api/nodes/${type}/${encodeURIComponent(slug)}${qs}`, { method: 'DELETE' });
     if (!res.ok) throw new Error('delete failed');
     onBeforeReload?.();
-    loadGraph(currentFocus, currentFocus !== null);
+    loadGraph(currentFocusSlugs, currentFocusSlugs.length > 0);
   } catch {
     alert('삭제에 실패했습니다.');
   }
@@ -1153,7 +1166,7 @@ async function openNodeView(type, slug, fallbackLabel) {
       openCreateNodePanel(container, {
         fixedCarrier: { slug: data.slug, title: data.title },
         needsConcepts: true,
-        onCreated: () => loadGraph(currentFocus, currentFocus !== null),
+        onCreated: () => loadGraph(currentFocusSlugs, currentFocusSlugs.length > 0),
       });
     });
   }
@@ -1173,7 +1186,7 @@ async function openNodeView(type, slug, fallbackLabel) {
         fixedType: 'entity',
         fixedConcept: { label: data.title, slug: data.slug },
         carrierOptions: sources,
-        onCreated: () => loadGraph(currentFocus, currentFocus !== null),
+        onCreated: () => loadGraph(currentFocusSlugs, currentFocusSlugs.length > 0),
       });
     });
   }
@@ -1780,7 +1793,7 @@ document.getElementById('btnBackToGraph').addEventListener('click', () => {
   document.body.classList.remove('node-mode');
   // 노드 화면에서 메모/첨부 이미지를 편집했을 수 있으니, 뒤에 깔려 있던(편집 전
   // 상태로 멈춰있는) 그래프를 새로고침해서 방금 바뀐 노드/에지가 바로 보이게 한다.
-  loadGraph(currentFocus, currentFocus !== null);
+  loadGraph(currentFocusSlugs, currentFocusSlugs.length > 0);
 });
 
 // 노드 본문은 매번 innerHTML을 통째로 새로 그리므로(openNodeView), 위키링크마다
@@ -1791,4 +1804,4 @@ document.getElementById('nodeModeBody').addEventListener('click', (event) => {
   openNodeView(link.dataset.nodeType, link.dataset.nodeSlug, link.textContent);
 });
 
-loadGraph(null);
+loadGraph([]);

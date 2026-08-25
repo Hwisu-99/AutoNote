@@ -26,7 +26,9 @@ def _parse_note(path: Path) -> tuple[dict, str]:
     return frontmatter, text[match.end() :]
 
 
-def build_graph(vault_path: str, focus_slug: str | None = None, only_focus: bool = False) -> dict:
+def build_graph(
+    vault_path: str, focus_slug: str | list[str] | None = None, only_focus: bool = False
+) -> dict:
     """AutoNote/ 폴더의 논문 노트와 node_store(_concepts/_entities)를 스캔해
     Obsidian 그래프 뷰와 같은 방식으로 노드/에지를 만든다: 노트 = 주황 노드,
     concept = 파랑 노드, entity = 회색 노드, 공통 tag = 초록 노드를 매개로 한 에지.
@@ -36,7 +38,13 @@ def build_graph(vault_path: str, focus_slug: str | None = None, only_focus: bool
     논문을 처리하는 시점에 한 번만 라벨을 판정해 sources에 박아두므로, 그래프를
     그릴 때마다 라벨을 다시 판정할 필요가 없다). entity의 sources 항목에
     concept_slug가 있으면 그 논문에서는 해당 concept 밑에 묶인 것이고, 없으면
-    논문에 직접 연결된 것이다(같은 entity라도 논문마다 다를 수 있음)."""
+    논문에 직접 연결된 것이다(같은 entity라도 논문마다 다를 수 있음).
+
+    focus_slug는 논문 slug 하나(str) 또는 여러 개(list[str])를 받는다 - 여러
+    개면 각 논문의 1~2촌 범위를 따로 구하는 게 아니라, 그 논문들을 모두 keep_ids의
+    시작점으로 삼아 한 번에 확장한다. 그러면 자연히 여러 논문의 focus 그래프를
+    합친 결과가 된다(같은 concept/entity를 공유하면 한 번만 나타남)."""
+    focus_slugs = {focus_slug} if isinstance(focus_slug, str) else set(focus_slug or [])
     autonote_dir = Path(vault_path) / "AutoNote"
     if not autonote_dir.is_dir():
         return {"nodes": [], "edges": [], "focus": focus_slug}
@@ -170,12 +178,12 @@ def build_graph(vault_path: str, focus_slug: str | None = None, only_focus: bool
             for md_image in _MD_IMAGE_RE.finditer(text):
                 _add_attachment(node_id, prefix, store_node["slug"], md_image.group(1).strip())
 
-    if only_focus and focus_slug:
-        keep_ids = {focus_slug}
+    if only_focus and focus_slugs:
+        keep_ids = set(focus_slugs)
         for e in edges:
-            if e["source"] == focus_slug:
+            if e["source"] in focus_slugs:
                 keep_ids.add(e["target"])
-            elif e["target"] == focus_slug:
+            elif e["target"] in focus_slugs:
                 keep_ids.add(e["source"])
 
         # orphan은 이 focus와 1~2촌 범위인지와 무관하게 항상 남겨둔다 - 연결할 대상을
