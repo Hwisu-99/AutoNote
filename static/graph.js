@@ -379,12 +379,27 @@ function renderGraph(data) {
     }
   }
 
+  // 전체 그래프 뷰(currentFocus === null)는 노드가 훨씬 많아(수백 개) "진짜"
+  // 노드까지 이전 위치를 계속 이어받으면, 조작할 때마다(orphan 하나만 새로
+  // 만들어도 전체 reload가 일어남) 레이아웃이 조금씩 넓게 드리프트하다가 결국
+  // 팬 가능 범위(translateExtent) 밖으로 나가버린다 - 그래서 전체 뷰는 "진짜"
+  // 노드만큼은 매번 완전히 새로(d3 기본 초기 배치) 자리잡게 두고, 포커스 뷰
+  // (노드 수가 적어 드리프트가 문제되지 않음)에서만 이어받는다.
+  const isFullGraphView = currentFocus === null;
+
   // 방금 만든 노드(자동연결 포함)는 최초 한 프레임만 원하는 자리(우클릭 지점/carrier
   // 근처)에서 시작하게 한다 - 에지 유무와 무관하게 적용(자동연결 노드는 이미 에지가
   // 생겨 있어 아래 orphan 전용 처리 대상이 아니므로 이 초기 시드가 유일한 위치 힌트).
   const nodes = visibleNodes.map((n) => {
     if (_pendingSpawnPosition?.id === n.id) {
-      return { ...n, x: _pendingSpawnPosition.x, y: _pendingSpawnPosition.y };
+      const spawn = { ...n, x: _pendingSpawnPosition.x, y: _pendingSpawnPosition.y };
+      // orphan(에지 없음)으로 막 생성된 노드는 그 자리에 완전히 고정한다 -
+      // 특히 전체 그래프 뷰는 매번 강하게 재정렬되므로 고정이 없으면 첫 틱부터
+      // 주변 수백 개 노드의 반발력에 밀려 클릭 지점을 순식간에 벗어난다.
+      // 이미 에지가 있는(자동연결) 노드는 고정하지 않는다 - 연결된 이웃 옆으로
+      // 자연스럽게 자리잡아야 하므로 시작 위치 힌트만 준다.
+      if (!edgeNodeIds.has(n.id)) { spawn.fx = spawn.x; spawn.fy = spawn.y; }
+      return spawn;
     }
     const pos = _nodePositions.get(n.id);
     if (!edgeNodeIds.has(n.id) && !_orphanAnchors.has(n.id)) {
@@ -392,13 +407,10 @@ function renderGraph(data) {
       // 에지 없는 노드는, 마지막으로 알려진 자리에 그대로 고정해서 큰 그래프가
       // 다시 자리잡는 동안 밀려나지 않게 한다.
       if (pos) return { ...n, x: pos.x, y: pos.y, fx: pos.x, fy: pos.y };
-    } else if (pos) {
-      // 에지가 있거나(논문/태그 등 "진짜" 노드) 앵커가 있는 노드도 마지막으로
-      // 알려진 자리를 시작 위치로 물려받는다(고정은 안 함 - 힘 시뮬레이션은
-      // 계속 작동해야 하므로). 이게 없으면 그래프를 다시 그릴 때마다(예: orphan
-      // 하나 새로 만들기만 해도 전체 reload가 일어남) "진짜" 노드들이 위치 힌트
-      // 없이 처음부터 다시 자리잡느라 화면 전체가 크게 출렁이고, 그 사이 이
-      // 노드를 앵커로 삼은 orphan도 덩달아 멀리 끌려다니게 된다.
+    } else if (pos && !isFullGraphView) {
+      // 에지가 있거나(논문 등 "진짜" 노드) 앵커가 있는 노드도, 포커스 뷰에서는
+      // 마지막으로 알려진 자리를 시작 위치로 물려받는다(고정은 안 함 - 힘
+      // 시뮬레이션은 계속 작동해야 하므로).
       return { ...n, x: pos.x, y: pos.y };
     }
     return { ...n };
@@ -644,6 +656,7 @@ function drag(sim, nodes, g, onConnectDrop, visibleNode) {
       event.sourceEvent.stopPropagation();
       d._connecting = false;
       d._dragging = true; // renderGraph()의 tick 핸들러가 이 노드의 앵커를 강제 적용하지 않게 막는 플래그
+      d._reheated = false; // 이번 제스처에서 아직 시뮬레이션을 재가열하지 않았음
       d._dragStartX = d.x;
       d._dragStartY = d.y;
       d._holdTimer = setTimeout(() => {
@@ -658,13 +671,27 @@ function drag(sim, nodes, g, onConnectDrop, visibleNode) {
           .attr('x2', d.x).attr('y2', d.y);
       }, CONNECT_HOLD_MS);
 
-      if (!event.active) sim.alphaTarget(0.3).restart();
+      // 시뮬레이션 재가열(alphaTarget)은 실제로 노드를 옮기기 시작할 때만 한다
+      // (아래 'drag' 핸들러) - 여기 'start'에서 무조건 재가열하면, 눌린 노드
+      // 자신은 fx/fy로 고정돼 있어도 노드가 수백 개인 전체 그래프 뷰에서는
+      // 이 재가열 하나로 그래프 전체가 들썩여서, 그냥 누르고만 있는(연결 모드
+      // 홀드) 동안에도 그 노드가 움직이는 것처럼 보이는 원인이 된다. 순수한
+      // 홀드는 노드 위치를 전혀 안 바꾸므로(마우스가 안 움직이면 'drag' 이벤트
+      // 자체가 안 옴) 애초에 재가열이 필요 없다.
       d.fx = d.x; d.fy = d.y;
     })
     .on('drag', (event, d) => {
       if (d._connecting) {
         d._previewLine.attr('x2', event.x).attr('y2', event.y);
         return; // 연결 모드에서는 노드 자체 위치(fx/fy)를 옮기지 않는다
+      }
+      // event.active는 'start'/'end' 쌍에서만 의도대로 동작하는 값이라(d3-drag
+      // 문서 참고) 'drag' 이벤트에서 그대로 쓰면 항상 거짓으로 평가돼 재가열이
+      // 아예 안 일어난다 - 제스처당 한 번만 재가열하면 되므로 직접 플래그로
+      // 관리한다.
+      if (!d._reheated) {
+        d._reheated = true;
+        sim.alphaTarget(0.3).restart();
       }
       d.fx = event.x; d.fy = event.y;
     })
