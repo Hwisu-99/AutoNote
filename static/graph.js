@@ -1487,6 +1487,30 @@ async function postWithDuplicateCheck(url, body) {
 function openCreateNodePanel(container, config) {
   let concepts = [];
 
+  // 지금 패널이 "연결할 논문"으로 실제로 쓰고 있는(또는 쓸) 논문 slug. 고정
+  // carrier면 그 값, 아니면 지금 렌더된 <select id="cnCarrier">의 값(아직 렌더
+  // 전이면 목록의 첫 항목 - <select>가 별도 selected 없이 첫 옵션을 기본
+  // 선택하는 것과 맞춘다).
+  const currentCarrierSlug = () => {
+    if (config.orphan) return null;
+    if (config.fixedCarrier) return config.fixedCarrier.slug;
+    return document.getElementById('cnCarrier')?.value || config.carrierOptions?.[0]?.slug || null;
+  };
+
+  // entity 생성 시 고를 수 있는 concept은 항상 "지금 이 carrier 논문에 실제로
+  // 연결된 concept"으로만 제한한다 - 무관한 concept을 고르면 entity의
+  // concept_slug는 그 concept을 가리키는데 concept 자신의 sources엔 이 논문이
+  // 없는 비일관 상태(그래프에 논문↔concept 에지가 없는데 concept↔entity
+  // 에지만 생김)가 된다.
+  const loadConceptsFor = async (carrierSlug) => {
+    if (!config.needsConcepts || config.fixedConcept || !carrierSlug) return [];
+    try {
+      const res = await fetch(`/api/concepts?paper_slug=${encodeURIComponent(carrierSlug)}`);
+      if (res.ok) return (await res.json()).concepts || [];
+    } catch { /* 못 불러오면 빈 목록으로 진행 - entity를 논문에 직접 연결하는 것까진 여전히 가능 */ }
+    return [];
+  };
+
   const render = () => {
     const type = config.fixedType || (document.getElementById('cnType')?.value ?? 'concept');
     container.innerHTML = `
@@ -1544,6 +1568,18 @@ function openCreateNodePanel(container, config) {
     document.getElementById('cnCancel').addEventListener('click', () => { container.innerHTML = ''; });
     document.getElementById('cnType')?.addEventListener('change', render);
     document.getElementById('cnSubmit').addEventListener('click', submit);
+
+    // 연결할 논문을 바꾸면 그 논문 기준으로 concept 목록을 다시 불러와 concept
+    // <select>만 갱신한다(패널 전체를 다시 그리면 이미 입력한 이름 등이
+    // 지워지므로, 그 select만 targeted하게 바꾼다).
+    document.getElementById('cnCarrier')?.addEventListener('change', async (event) => {
+      concepts = await loadConceptsFor(event.target.value);
+      const conceptSelect = document.getElementById('cnConcept');
+      if (conceptSelect) {
+        conceptSelect.innerHTML = `<option value="">(없음 - 논문에 직접 연결)</option>` +
+          concepts.map((c) => `<option value="${escapeHtml(c.slug)}">${escapeHtml(c.label)}</option>`).join('');
+      }
+    });
   };
 
   const submit = async () => {
@@ -1582,12 +1618,7 @@ function openCreateNodePanel(container, config) {
   };
 
   (async () => {
-    if (config.needsConcepts && !config.fixedConcept) {
-      try {
-        const res = await fetch('/api/concepts');
-        if (res.ok) concepts = (await res.json()).concepts || [];
-      } catch { /* 못 불러오면 빈 목록으로 진행 - entity를 논문에 직접 연결하는 것까진 여전히 가능 */ }
-    }
+    concepts = await loadConceptsFor(currentCarrierSlug());
     render();
   })();
 }

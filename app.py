@@ -332,13 +332,20 @@ async def get_papers():
 
 
 @app.get("/api/concepts")
-async def get_concepts():
-    """concept 노드 목록을 {slug, label} 쌍으로 가볍게 반환한다. entity를 직접 만들 때
-    "어느 concept에 연결할지" 드롭다운을 채우는 용도 - 시스템 전체 concept 중에서
-    고를 수 있어야, 지금 보고 있는 논문과 다른 논문에서 만들어진 concept에도
-    entity를 이어붙일 수 있다."""
+async def get_concepts(paper_slug: str):
+    """paper_slug 논문에 이미 연결된(그 논문이 sources에 있는) concept 노드
+    목록을 {slug, label} 쌍으로 반환한다. entity를 직접 만들 때 "어느 concept에
+    연결할지" 드롭다운을 채우는 용도.
+
+    예전엔 시스템 전체 concept 중에서 고를 수 있었는데, 그러면 지금 만드는
+    entity의 carrier 논문과 실제로는 한 번도 연결된 적 없는 concept을 골라버릴
+    수 있었다 - concept_slug만 보고 concept->entity 에지가 그려지는 반면
+    paper->concept 에지는 없는 비일관 상태(그래프에 이 논문의 흔적이 안 남음)가
+    생기는 원인이었다. 항상 그 논문 자신에 연결된 concept 중에서만 고르게 해서
+    이 문제를 근본적으로 막는다."""
     nodes = list_nodes(NODE_STORE_ROOT, "concept")
-    return {"concepts": [{"slug": n["slug"], "label": n["display_label"]} for n in nodes]}
+    matching = [n for n in nodes if any(s.get("slug") == paper_slug for s in (n.get("sources") or []))]
+    return {"concepts": [{"slug": n["slug"], "label": n["display_label"]} for n in matching]}
 
 
 def _duplicate_node_http_exception(exc: DuplicateNodeError) -> HTTPException:
