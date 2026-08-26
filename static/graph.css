@@ -121,16 +121,20 @@ body.graph-expanded #graphSummary {
    등으로 넓어져도 텍스트가 가장자리까지 꽉 차지 않게. #nodeModeBody의 직계
    자식(제목/메타/본문/편집영역)에 각각 건다 - 컨테이너 자체는 스크롤 때문에
    full width를 유지해야 하므로. */
+.node-view-title-row,
 .node-view-title,
 .node-view-meta,
 .node-view-aliases,
 #addAliasContainer,
+#renameNodeContainer,
 .node-view-body,
 .node-view-usernotes {
   max-width: 760px;
   margin-left: auto;
   margin-right: auto;
 }
+.node-view-title-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.node-view-title-row .node-view-title { margin-bottom: 0; }
 .node-view-title { font-size: 1.1rem; font-weight: 650; margin-bottom: 4px; }
 .node-view-meta { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: .78rem; color: var(--text-muted); margin-bottom: 16px; }
 .node-view-meta span { white-space: nowrap; }

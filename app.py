@@ -38,6 +38,7 @@ from paper_notes.node_store import (
     remove_category,
     remove_source,
     remove_source_from_node,
+    rename_display_label,
     resolve_or_create_node,
     save_attachment,
     unlink_concept_from_entity,
@@ -662,6 +663,36 @@ async def remove_node_alias(node_type: str, slug: str, payload: _AliasPayload):
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"aliases": aliases}
+
+
+class _DisplayLabelPayload(BaseModel):
+    label: str
+
+
+@app.put("/api/nodes/{node_type}/{slug}/display-label")
+async def put_node_display_label(node_type: str, slug: str, payload: _DisplayLabelPayload):
+    """사용자가 노드의 표시 이름을 직접 바꾼다. slug(파일명, 다른 노드가 이
+    concept을 가리킬 때 쓰는 실제 키)는 그대로 두고 display_label만 바뀐다 -
+    node_store.rename_display_label() 참고. 예전 이름은 자동으로 별칭이 되어
+    다른 논문 본문의 기존 위키링크가 계속 풀린다."""
+    if node_type not in ("concept", "entity"):
+        raise HTTPException(status_code=404, detail="알 수 없는 노드 타입입니다.")
+    try:
+        result = rename_display_label(NODE_STORE_ROOT, node_type, slug, payload.label)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except DuplicateNodeError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "type": "alias_taken",
+                "message": f"'{payload.label}'는 이미 다른 노드(\"{exc.match['display_label']}\")가 쓰고 있습니다.",
+                "existing": {"slug": exc.match["slug"], "label": exc.match["display_label"]},
+            },
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return result
 
 
 class _CategoryPayload(BaseModel):

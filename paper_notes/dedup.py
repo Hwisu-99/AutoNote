@@ -39,9 +39,21 @@ def normalize_label(label: str) -> str:
     이 단계에서 바로 같은 키로 합친다. node_store._matches_node()가 같은
     node_store 파일의 display_label/alias를 여러 원본 라벨과 비교할 때마다
     매번 다시 정규화하는 게 프로파일링에서 확인한 최대 병목이라 캐싱한다.
+
+    문자와 숫자가 구분자 없이 붙어 있으면("Mamba2") 하이픈/공백으로 띄어 쓴
+    같은 개념("Mamba-2", "Mamba 2")과 서로 다른 키가 되어 중복 검사를 피해간다 -
+    "Mamba-2"는 기존 노드의 alias와 완전일치해 바로 잡히지만, "Mamba2"는
+    자카드 유사도까지 떨어져도(문자 3-gram이 갈라지는 경계 하나 차이로 짧은
+    라벨일수록 비율에 크게 영향) threshold를 못 넘어 조용히 새 노드가 생긴 사례가
+    실제로 있었다. 문자<->숫자 경계에 공백을 넣어 두 표기를 같은 키로 합친다("resnet50"/
+    "resnet-50" -> "resnet 50"). 자릿수 자체가 다른 경우("ResNet-50" vs
+    "ResNet-101")는 이 정규화로도 여전히 다른 키가 되므로 안전하다 - 별개로
+    _numeric_tokens_differ()가 이런 버전 차이는 병합하지 않도록 한 번 더 막아준다.
     """
     s = unicodedata.normalize("NFKC", label)
     s = re.sub(r"[^\w]+", " ", s, flags=re.UNICODE)
+    s = re.sub(r"(?<=[^\W\d_])(?=\d)", " ", s)
+    s = re.sub(r"(?<=\d)(?=[^\W\d_])", " ", s)
     return re.sub(r"\s+", " ", s).strip().casefold()
 
 

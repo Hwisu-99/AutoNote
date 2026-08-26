@@ -1176,7 +1176,15 @@ async function openNodeView(type, slug, fallbackLabel) {
     : '<p class="node-view-usernotes-empty">클릭해서 메모를 남기세요 (Ctrl+S로 저장, Esc로 취소)</p>';
 
   bodyEl.innerHTML = `
-    <div class="node-view-title">${escapeHtml(data.title)}</div>
+    ${editable ? `
+      <div class="node-view-title-row">
+        <div class="node-view-title">${escapeHtml(data.title)}</div>
+        <button class="graph-btn" id="btnRenameNode" title="이름 변경">이름 변경</button>
+      </div>
+      <div id="renameNodeContainer"></div>
+    ` : `
+      <div class="node-view-title">${escapeHtml(data.title)}</div>
+    `}
     <div class="node-view-meta">${metaChips.join('')}</div>
     ${editable ? `
       <div class="node-view-aliases">
@@ -1229,6 +1237,7 @@ async function openNodeView(type, slug, fallbackLabel) {
 
   if (editable) wireUserNotesEditing(type, slug, userMarkdown, data.links);
   if (editable) wireAliasEditing(type, slug);
+  if (editable) wireRenameEditing(type, slug, data.title);
   if (data.type === 'concept') wireCategoryEditing(slug, data.meta.categories || []);
 
   // concept/entity 노드는 (LLM이 뽑았든 사용자가 직접 만들었든) 삭제 가능 - 노드
@@ -1344,6 +1353,54 @@ function wireAliasEditing(type, slug) {
         const { aliases } = await res.json();
         chipsEl.innerHTML = renderAliasChips(aliases);
         addContainer.innerHTML = '';
+      } catch (err) {
+        statusEl.textContent = err.message;
+      }
+    });
+  });
+}
+
+// LLM이 맨 처음 고른 표기가 항상 이 개념을 가장 잘 설명하는 건 아니다(예:
+// "Mamba-2 Architecture"보다 "Mamba-2"). slug(파일명/다른 노드가 참조하는 키)는
+// 그대로 두고 display_label만 바꾼다 - node_store.rename_display_label() 참고.
+// 성공하면 예전 이름은 자동으로 별칭이 되고(다른 논문 본문의 기존 위키링크가
+// 계속 풀리도록), 뷰 전체를 새 이름으로 다시 불러온다(별칭 목록도 같이 바뀌었으므로).
+function wireRenameEditing(type, slug, currentTitle) {
+  document.getElementById('btnRenameNode').addEventListener('click', () => {
+    const container = document.getElementById('renameNodeContainer');
+    if (container.innerHTML.trim()) { container.innerHTML = ''; return; } // 토글: 다시 누르면 닫힘
+    container.innerHTML = `
+      <div class="create-node-panel">
+        <div class="create-node-row">
+          <label>이름</label>
+          <input type="text" id="renameLabelInput" value="${escapeHtml(currentTitle)}">
+        </div>
+        <div class="create-node-actions">
+          <button class="graph-btn" id="btnConfirmRename">변경</button>
+          <button class="graph-btn" id="btnCancelRename">취소</button>
+          <span class="node-view-edit-status" id="renameStatus"></span>
+        </div>
+      </div>
+    `;
+    document.getElementById('btnCancelRename').addEventListener('click', () => { container.innerHTML = ''; });
+    document.getElementById('btnConfirmRename').addEventListener('click', async () => {
+      const input = document.getElementById('renameLabelInput');
+      const statusEl = document.getElementById('renameStatus');
+      const label = input.value.trim();
+      if (!label) { statusEl.textContent = '이름을 입력하세요.'; return; }
+      statusEl.textContent = '변경 중...';
+      try {
+        const res = await fetch(`/api/nodes/${type}/${encodeURIComponent(slug)}/display-label`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ label }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          const message = typeof err.detail === 'string' ? err.detail : (err.detail?.message || '변경에 실패했습니다.');
+          throw new Error(message);
+        }
+        await openNodeView(type, slug, label);
       } catch (err) {
         statusEl.textContent = err.message;
       }

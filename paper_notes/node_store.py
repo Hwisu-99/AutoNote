@@ -1031,6 +1031,51 @@ def add_alias(store_root: str, node_type: str, slug: str, alias: str) -> list[st
     return aliases
 
 
+def rename_display_label(store_root: str, node_type: str, slug: str, new_label: str) -> dict:
+    """사용자가 노드의 표시 이름(display_label)을 직접 바꾼다 - LLM이 맨 처음
+    고른 표기가 항상 가장 적절한 건 아니다(예: "Mamba-2 Architecture"보다
+    "Mamba-2"가 이 개념을 더 잘 설명하는 경우). slug(파일명, entity의
+    concept_slug 같은 실제 참조 키)는 그대로 둔다 - 그래프 노드 ID는
+    display_label로부터 매 렌더링마다 새로 계산되는 값이라 여기서 안 바꿔도
+    다음 렌더부터 자동으로 새 이름을 쓰고, slug를 바꾸면 파일명·다른 노드의
+    concept_slug 참조·첨부파일 경로·병합 이력(redirect_to)까지 전부 같이
+    고쳐야 하는 훨씬 크고 위험한 작업이 된다 - 이름과 식별자를 분리해두면
+    이런 연쇄 수정 없이 안전하게 이름만 바꿀 수 있다.
+
+    예전 display_label은 alias로 자동 편입된다 - 다른 논문 본문에 이미 박혀있는
+    위키링크([[예전 이름]])가 그대로 계속 풀리게 하기 위해서다. new_label이
+    이미 이 노드 자신의 alias였다면(가장 흔한 경우 - "표시 이름으로 승격") 그
+    자기 자신을 가리키는 중복 alias는 빼낸다. new_label을 이미 "다른" 노드가
+    쓰고 있으면(정규화 기준) 막는다 - add_alias()와 같은 이유."""
+    new_label = new_label.strip()
+    if not new_label:
+        raise ValueError("이름을 입력하세요.")
+
+    path = _node_dir(store_root, node_type) / f"{slug}.md"
+    frontmatter = _read_frontmatter(path)
+    if not frontmatter.get("slug"):
+        raise FileNotFoundError(f"노드 파일을 찾을 수 없습니다: {slug}")
+
+    old_label = frontmatter["display_label"]
+    key = normalize_label(new_label)
+    if key == normalize_label(old_label):
+        raise ValueError("지금 표시 이름과 같습니다.")
+
+    owner = node_index(store_root, node_type).get(key)
+    if owner is not None and owner["slug"] != slug:
+        raise DuplicateNodeError(owner)
+
+    aliases = [a for a in (frontmatter.get("aliases") or []) if normalize_label(a) != key]
+    if not any(normalize_label(a) == normalize_label(old_label) for a in aliases):
+        aliases.append(old_label)
+
+    frontmatter["display_label"] = new_label
+    frontmatter["aliases"] = aliases
+    user_section = _extract_user_section(path)
+    _write_node_file(path, frontmatter, user_section)
+    return {"display_label": new_label, "aliases": aliases}
+
+
 def remove_alias(store_root: str, node_type: str, slug: str, alias: str) -> list[str]:
     """사용자가 노드 화면에서 직접 별칭을 지운다 - LLM이 잘못 판단해서 붙인 별칭
     (실제로는 다른 개념인데 같다고 오판한 경우 등)을 사용자가 바로잡을 수 있게
