@@ -1099,6 +1099,15 @@ def _update_node(
     # 있다). slug와 마찬가지로 노드 정체성은 최초 생성 시 확정, 이후 변경 없음.
     existing_aliases = set(frontmatter.get("aliases") or [])
     existing_aliases.update(a for a in aliases if a)
+    # label 자체도 alias 집합에 넣는다 - 이 논문이 준 aliases가 아니라 label
+    # 하나만으로(또는 label+alias 조합으로) 기존 노드와 매칭됐을 수도 있는데,
+    # 그 경우 매칭에 실제로 쓰인 신호(alias)만 합치고 label 자체는 안 넣으면,
+    # 이 논문 자신의 본문 위키링크([[label]], write_note()가 그대로 씀)가
+    # 나중에 이 노드를 다시 못 찾는 문제가 생긴다(실제로 겪음 - Semiseparable
+    # Matrix/Matrices 사례). display_label과 정규화 기준으로 같으면 중복이니
+    # 굳이 안 넣는다.
+    if label and normalize_label(label) != normalize_label(frontmatter["display_label"]):
+        existing_aliases.add(label)
     frontmatter["aliases"] = sorted(existing_aliases)
 
     sources = frontmatter.get("sources") or []
