@@ -449,6 +449,47 @@ function renderGraph(data) {
     .attr('class', 'graph-link')
     .attr('stroke-width', 1.2);
 
+  // 눈에 보이는 선(1.2px)은 우클릭하기엔 너무 가늘다 - 노드의 hitArea와 같은
+  // 이유로, 투명하고 훨씬 굵은 선을 그 위에 겹쳐 그려 실제 반응 영역만 넓힌다.
+  const linkHitArea = g.append('g')
+    .selectAll('line')
+    .data(links)
+    .join('line')
+    .attr('stroke', 'transparent')
+    .attr('stroke-width', 12)
+    .attr('class', 'graph-link-hit-area');
+
+  // note↔concept, note↔entity(직접 연결), concept↔entity 에지만 사용자가 직접
+  // 끊을 수 있다 - tag/논문 간 위키링크/첨부파일 에지는 논문 본문 자연어나
+  // frontmatter를 직접 편집해야 해서 위험도가 다르다(지금 범위 밖). d3.forceLink가
+  // 초기화되면서 link.source/target이 문자열 id에서 실제 노드 객체 참조로
+  // 바뀌므로, 여기서는 d.source.type/d.target.type을 바로 쓸 수 있다.
+  function handleLinkContextMenu(event, d) {
+    event.preventDefault();
+    event.stopPropagation();
+    const { source, target } = d;
+
+    if (source.type === 'note' && (target.type === 'concept' || target.type === 'entity') && target.node_slug) {
+      showContextMenu(event.clientX, event.clientY, [
+        { label: '연결 끊기', onClick: () => deleteEdgeWithConfirm(
+            `${source.label} ↔ ${target.label}`,
+            () => callDeleteSourceApi(target.type, target.node_slug, source.id),
+          ) },
+      ]);
+      return;
+    }
+    if (source.type === 'concept' && target.type === 'entity' && source.node_slug && target.node_slug) {
+      showContextMenu(event.clientX, event.clientY, [
+        { label: '연결 끊기', onClick: () => deleteEdgeWithConfirm(
+            `${source.label} ↔ ${target.label}`,
+            () => callUnlinkConceptApi(target.node_slug, source.node_slug),
+          ) },
+      ]);
+    }
+    // 그 외 조합(tag, 논문 간 링크, 첨부파일 등)은 메뉴를 띄우지 않는다.
+  }
+  linkHitArea.on('contextmenu', handleLinkContextMenu);
+
   const node = g.append('g')
     .selectAll('circle')
     .data(nodes)
@@ -534,21 +575,24 @@ function renderGraph(data) {
         return;
       }
 
-      if (paperIds.length === 1) {
-        await callLinkApi('entity', source.node_slug, paperIds[0], target.node_slug);
-        return;
+      // concept이 이미 연결된 논문 전부에 entity를 연결한다(하나만 골라 물어보지
+      // 않음) - concept 자체가 그 논문들과 이미 연결돼 있으니, entity도 전부와
+      // 연결돼야 나중에 특정 논문↔concept 에지 하나만 지웠을 때 그 논문에
+      // 한정해서만 entity의 concept 그룹핑이 풀리는 일관된 삭제 동작이 나온다
+      // (하나만 연결했다면 다른 논문↔concept 에지를 지워도 entity 쪽엔 반영할
+      // 대상 자체가 없다). 같은 파일을 순차로 갱신해야 하므로 병렬(Promise.all)
+      // 대신 하나씩 await한다.
+      for (const paperId of paperIds) {
+        await callLinkApi('entity', source.node_slug, paperId, target.node_slug, { reload: false });
       }
-      const options = paperIds
-        .map((id) => data.nodes.find((n) => n.id === id))
-        .filter(Boolean);
-      showContextMenu(sourceEvent.clientX, sourceEvent.clientY, options.map((opt) => ({
-        label: opt.label,
-        onClick: () => callLinkApi('entity', source.node_slug, opt.id, target.node_slug),
-      })));
+      loadGraph(currentFocusSlugs, currentFocusSlugs.length > 0);
     }
   }
 
-  async function callLinkApi(nodeType, nodeSlug, paperSlug, conceptSlug) {
+  // reload=false로 여러 번 부른 뒤 마지막에 한 번만 loadGraph()하면(entity를
+  // concept이 걸린 논문 전부에 연결하는 루프처럼) 중간에 그래프가 여러 번
+  // 깜빡이며 다시 그려지는 걸 피할 수 있다.
+  async function callLinkApi(nodeType, nodeSlug, paperSlug, conceptSlug, { reload = true } = {}) {
     try {
       const res = await fetch(`/api/nodes/${nodeType}/${encodeURIComponent(nodeSlug)}/link`, {
         method: 'POST',
@@ -556,7 +600,7 @@ function renderGraph(data) {
         body: JSON.stringify({ paper_slug: paperSlug, concept_slug: conceptSlug || null }),
       });
       if (!res.ok) throw new Error('link failed');
-      loadGraph(currentFocusSlugs, currentFocusSlugs.length > 0);
+      if (reload) loadGraph(currentFocusSlugs, currentFocusSlugs.length > 0);
     } catch {
       alert('연결에 실패했습니다.');
     }
@@ -639,6 +683,9 @@ function renderGraph(data) {
     });
 
     link
+      .attr('x1', (d) => d.source.x).attr('y1', (d) => d.source.y)
+      .attr('x2', (d) => d.target.x).attr('y2', (d) => d.target.y);
+    linkHitArea
       .attr('x1', (d) => d.source.x).attr('y1', (d) => d.source.y)
       .attr('x2', (d) => d.target.x).attr('y2', (d) => d.target.y);
     node.attr('cx', (d) => d.x).attr('cy', (d) => d.y);
@@ -1040,6 +1087,41 @@ async function deleteNodeWithConfirm(type, slug, title, onBeforeReload) {
   } catch {
     alert('삭제에 실패했습니다.');
   }
+}
+
+// 그래프에서 에지(연결)를 사용자가 직접 끊는 공용 확인+새로고침 로직 - 노드
+// 삭제(deleteNodeWithConfirm)와 같은 패턴이다. apiCall은 실제 DELETE 요청을
+// 보내는 함수(callDeleteSourceApi 또는 callUnlinkConceptApi) 중 하나.
+async function deleteEdgeWithConfirm(edgeLabel, apiCall) {
+  if (!confirm(`"${edgeLabel}" 연결을 끊을까요?\n두 노드 자체는 그대로 남고 이 연결만 사라집니다.`)) {
+    return;
+  }
+  try {
+    await apiCall();
+    loadGraph(currentFocusSlugs, currentFocusSlugs.length > 0);
+  } catch {
+    alert('연결 끊기에 실패했습니다.');
+  }
+}
+
+// note↔concept, note↔entity(직접 연결) 에지 끊기 - 그 노드의 sources[]에서
+// 논문 항목 하나를 지운다(node_store.remove_source_from_node).
+async function callDeleteSourceApi(nodeType, nodeSlug, paperSlug) {
+  const res = await fetch(
+    `/api/nodes/${nodeType}/${encodeURIComponent(nodeSlug)}/sources/${encodeURIComponent(paperSlug)}`,
+    { method: 'DELETE' }
+  );
+  if (!res.ok) throw new Error('delete source failed');
+}
+
+// concept↔entity 에지 끊기 - entity의 sources[] 중 이 concept_slug와 일치하는
+// 항목을 전부 처리한다(node_store.unlink_concept_from_entity).
+async function callUnlinkConceptApi(entitySlug, conceptSlug) {
+  const res = await fetch(
+    `/api/nodes/entity/${encodeURIComponent(entitySlug)}/concept/${encodeURIComponent(conceptSlug)}`,
+    { method: 'DELETE' }
+  );
+  if (!res.ok) throw new Error('unlink concept failed');
 }
 
 async function openNodeView(type, slug, fallbackLabel) {

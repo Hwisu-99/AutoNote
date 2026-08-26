@@ -862,6 +862,136 @@ def _propagate_paper_to_paperless_entities(
             _write_node_file(path, frontmatter, user_section)
 
 
+def remove_source_from_node(store_root: str, node_type: str, node_slug: str, paper_slug: str) -> bool:
+    """사용자가 그래프에서 note↔concept 또는 note↔entity(직접 연결) 에지를
+    지울 때 쓴다 - 이 노드의 sources[]에서 그 논문 항목 하나만 제거한다.
+
+    remove_source()(논문 삭제/재처리용, 모든 노드에서 그 논문을 지우고 sources가
+    비면 파일 자체를 삭제)와 달리, 이건 사용자가 명시적으로 에지 하나만 끊는
+    행위라 sources가 비어도 파일을 지우지 않는다 - orphan 노드(그래프 배경
+    우클릭으로 만드는 것과 동일한 상태)로 남겨서, alias/description/사용자
+    메모 같은 이 노드의 다른 데이터를 그대로 보존한다. 노드를 완전히 없애고
+    싶으면 별도의 삭제 기능(delete_node)을 써야 한다.
+
+    실제로 항목을 지웠으면 True, 그 논문 항목이 애초에 없었으면 False."""
+    path = _node_dir(store_root, node_type) / f"{node_slug}.md"
+    frontmatter = _read_frontmatter(path)
+    if not frontmatter.get("slug"):
+        raise FileNotFoundError(f"노드 파일을 찾을 수 없습니다: {node_slug}")
+
+    sources = frontmatter.get("sources") or []
+    remaining = [s for s in sources if s.get("slug") != paper_slug]
+    if len(remaining) == len(sources):
+        return False
+
+    frontmatter["sources"] = remaining
+    user_section = _extract_user_section(path)
+    _write_node_file(path, frontmatter, user_section)
+
+    # concept이 이 논문과의 연결을 잃었으면, 그 논문에서 이 concept 밑에 묶여
+    # 있던 entity들의 그 등장 기록은 더 이상 "이 논문에서 등장했다"고 말할 수
+    # 없다(concept 쪽엔 이미 그 논문 기록 자체가 없으니) - 논문 쪽(slug/title)만
+    # 지우고 concept_slug는 그대로 남긴다(entity->concept 관계 자체는 논문과
+    # 무관하게 유지 - concept_slug만으로도 그래프에 concept->entity 에지가
+    # 그려지므로, 이 항목은 paperless 연결로 전환된다). _propagate_paper_to_
+    # paperless_entities()의 정반대 방향이다.
+    #
+    # 왜 concept_slug를 지우지 않고 논문 쪽을 지우는지: concept↔entity 관계
+    # (사용자가 명시적으로 만든 분류)가 note↔concept 관계(그 논문 하나의
+    # 근거)보다 더 근본적이라고 본다 - 논문 근거 하나가 사라졌다고 사용자가
+    # 만든 분류까지 같이 사라지면 안 된다.
+    if node_type == "concept":
+        _unlink_paper_from_concept_entities(store_root, node_slug, paper_slug)
+
+    return True
+
+
+def _unlink_paper_from_concept_entities(store_root: str, concept_slug: str, paper_slug: str) -> None:
+    """concept이 특정 논문과의 연결을 잃었을 때, 그 논문에서 그 concept 밑에
+    묶여 있던 entity들의 해당 source 항목을 정리한다 - remove_source_from_node()가
+    concept 타입 호출 끝에서 쓴다.
+
+    entity가 같은 concept_slug를 가리키는 **다른** source 항목을 이미 갖고
+    있으면(concept이 다른 논문과는 여전히 연결돼 있어 그 논문 쪽 항목이 이미
+    entity->concept 관계를 대표하고 있는 경우, 또는 이미 별도의 paperless
+    항목이 있는 경우) 이번 항목은 그냥 통째로 지운다 - 안 그러면 같은
+    concept_slug를 가리키는 항목이 중복으로 남는다(예: 논문B 항목은 그대로
+    concept_slug=C인데, 논문A 항목도 paperless로 concept_slug=C를 또
+    남기는 식).
+
+    다른 항목이 전혀 없으면(이 항목이 이 entity와 이 concept을 잇는 유일한
+    연결) 논문 쪽(slug/title)만 지우고 concept_slug는 남겨 paperless 연결로
+    전환한다 - concept 자신이 orphan이 되더라도(더 이상 어떤 논문과도 연결
+    안 됨) entity->concept 관계 자체는 유지하기 위해서다."""
+    candidates = [
+        n["slug"] for n in list_nodes(store_root, "entity")
+        if any(
+            s.get("concept_slug") == concept_slug and s.get("slug") == paper_slug
+            for s in (n.get("sources") or [])
+        )
+    ]
+    for entity_slug in candidates:
+        path = _node_dir(store_root, "entity") / f"{entity_slug}.md"
+        frontmatter = _read_frontmatter(path)
+        sources = frontmatter.get("sources") or []
+        has_other_link_to_concept = any(
+            s.get("concept_slug") == concept_slug and s.get("slug") != paper_slug for s in sources
+        )
+        changed = False
+        new_sources = []
+        for s in sources:
+            if s.get("concept_slug") == concept_slug and s.get("slug") == paper_slug:
+                changed = True
+                if has_other_link_to_concept:
+                    continue  # 이미 다른 항목이 이 concept 관계를 대표하니 중복 안 만들고 버림
+                s["slug"] = None
+                s["title"] = None
+            new_sources.append(s)
+        if changed:
+            frontmatter["sources"] = new_sources
+            user_section = _extract_user_section(path)
+            _write_node_file(path, frontmatter, user_section)
+
+
+def unlink_concept_from_entity(store_root: str, entity_slug: str, concept_slug: str) -> bool:
+    """사용자가 그래프에서 concept↔entity 에지를 지울 때 쓴다.
+
+    entity 하나가 같은 concept 밑에 여러 논문에서 각각 묶일 수 있어서(두 논문을
+    독립적으로 처리했는데 우연히 같은 concept으로 분류된 경우 - 흔히 있는 정상
+    상황), sources[] 안에 concept_slug가 같은 항목이 여러 개 있을 수 있다.
+    화면에는 concept→entity 에지가 한 줄로만 보이므로(d3가 중복 에지를
+    구분하지 않음), 그 항목들 중 하나만 처리하면 나머지 때문에 에지가 그래프에
+    그대로 남아 "지웠는데 안 지워진" 것처럼 보인다 - 그래서 concept_slug가
+    일치하는 항목을 전부 찾아 한꺼번에 처리한다.
+
+    각 항목은 논문 유무와 무관하게 통째로 삭제한다(entity→note 직접 연결로
+    되돌리지 않음) - concept↔entity 관계를 끊는다는 건 이 entity가 "이 concept의
+    맥락"에서 완전히 빠진다는 뜻이라, 그 맥락에서만 딸려온 논문 연결(특히
+    "concept이 걸린 논문 전부에 연결"하는 기능으로 생긴 항목)까지 같이
+    사라져야 두 관계가 깔끔하게 분리된다(예: 논문A-conceptB / entityE-conceptD-
+    논문C 처럼). entity가 그 논문에 정말 직접 등장한다는 별도 근거가 있으면,
+    그건 애초에 concept_slug 없는 별개의 source 항목으로 있어야 하는 사실이다.
+
+    sources가 다 비어도 파일은 지우지 않는다(remove_source_from_node와 같은
+    이유 - orphan으로 남겨 다른 데이터 보존). 실제로 뭔가 바뀌었으면 True."""
+    path = _node_dir(store_root, "entity") / f"{entity_slug}.md"
+    frontmatter = _read_frontmatter(path)
+    if not frontmatter.get("slug"):
+        raise FileNotFoundError(f"노드 파일을 찾을 수 없습니다: {entity_slug}")
+
+    sources = frontmatter.get("sources") or []
+    new_sources = [s for s in sources if s.get("concept_slug") != concept_slug]
+    changed = len(new_sources) != len(sources)
+
+    if not changed:
+        return False
+
+    frontmatter["sources"] = new_sources
+    user_section = _extract_user_section(path)
+    _write_node_file(path, frontmatter, user_section)
+    return True
+
+
 def add_alias(store_root: str, node_type: str, slug: str, alias: str) -> list[str]:
     """사용자가 노드 화면에서 직접 별칭을 추가한다. LLM이 판단한 별칭이 항상
     정확하다는 보장은 없으므로(놓친 표기가 있거나, 반대로 실제로는 다른 개념인데

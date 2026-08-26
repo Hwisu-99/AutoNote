@@ -37,8 +37,10 @@ from paper_notes.node_store import (
     remove_alias,
     remove_category,
     remove_source,
+    remove_source_from_node,
     resolve_or_create_node,
     save_attachment,
+    unlink_concept_from_entity,
     update_user_section,
 )
 from paper_notes.obsidian_writer import delete_note as delete_local_note
@@ -507,6 +509,41 @@ async def link_node(node_type: str, slug: str, payload: _LinkNodePayload):
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    return {"ok": True}
+
+
+@app.delete("/api/nodes/{node_type}/{slug}/sources/{paper_slug}")
+async def delete_node_source(node_type: str, slug: str, paper_slug: str):
+    """그래프에서 note↔concept 또는 note↔entity(직접 연결) 에지를 사용자가
+    직접 끊을 때 호출된다. 이 노드의 sources[]에서 그 논문 항목 하나만
+    지운다 - sources가 다 비어도 파일은 지우지 않고 orphan으로 남긴다(다른
+    데이터를 보존하기 위해서 - 완전 삭제는 별도의 노드 삭제 기능을 써야 함)."""
+    if node_type not in ("concept", "entity"):
+        raise HTTPException(status_code=404, detail="알 수 없는 노드 타입입니다.")
+    try:
+        removed = remove_source_from_node(NODE_STORE_ROOT, node_type, slug, paper_slug)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if not removed:
+        raise HTTPException(status_code=404, detail="그 논문과의 연결을 찾을 수 없습니다.")
+    return {"ok": True}
+
+
+@app.delete("/api/nodes/entity/{slug}/concept/{concept_slug}")
+async def delete_entity_concept_link(slug: str, concept_slug: str):
+    """그래프에서 concept↔entity 에지를 사용자가 직접 끊을 때 호출된다. 이
+    entity의 sources[] 중 그 concept_slug와 일치하는 항목을 전부 찾아
+    통째로 삭제한다(entity가 여러 논문에서 독립적으로 같은 concept 밑에
+    묶였을 수 있어, 하나만 처리하면 나머지 때문에 에지가 그래프에 그대로
+    남는다). 논문 유무와 무관하게 삭제하고 entity→note 직접 연결로는
+    되돌리지 않는다 - concept과의 관계를 끊는다는 건 그 맥락에서 완전히
+    빠진다는 뜻이라(node_store.unlink_concept_from_entity 참고)."""
+    try:
+        changed = unlink_concept_from_entity(NODE_STORE_ROOT, slug, concept_slug)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if not changed:
+        raise HTTPException(status_code=404, detail="그 concept과의 연결을 찾을 수 없습니다.")
     return {"ok": True}
 
 

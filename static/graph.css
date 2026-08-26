@@ -84,6 +84,12 @@ body.graph-expanded #graphSummary {
 .graph-label { fill: var(--text-muted); font-size: 10px; pointer-events: none; user-select: none; }
 .graph-label.hovered { fill: var(--text); font-weight: 700; }
 .graph-link { stroke: var(--border); stroke-opacity: .7; transition: opacity .15s ease, stroke .15s ease, stroke-opacity .15s ease; }
+/* 눈에 보이는 선(1.2px)은 우클릭하기엔 너무 가늘어서, node-hit-area와 같은
+   이유로 투명하고 훨씬 굵은 선을 겹쳐 그려 실제 반응 영역만 넓힌다. 우클릭
+   가능한 조합(note↔concept/entity, concept↔entity)에서만 메뉴가 뜨지만,
+   커서 자체는 모든 에지에서 동일하게 보여준다(어떤 에지가 지원되는지는
+   실제로 우클릭해봐야 아는 정도로 충분). */
+.graph-link-hit-area { cursor: context-menu; }
 
 .dimmed { opacity: .15; transition: opacity .15s ease; }
 .graph-link.highlighted { stroke: var(--accent); stroke-opacity: .9; stroke-width: 1.8px; }
