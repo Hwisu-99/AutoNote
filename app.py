@@ -46,6 +46,12 @@ from paper_notes.node_store import (
 )
 from paper_notes.obsidian_writer import delete_note as delete_local_note
 from paper_notes.obsidian_writer import write_note, write_summary_json
+from paper_notes.paper_folders import (
+    create_folder,
+    delete_folder,
+    list_folders,
+    set_paper_folder,
+)
 from paper_notes.supabase_writer import delete_note as delete_remote_note
 from paper_notes.supabase_writer import list_papers, upload_note, upload_summary
 from paper_notes.utils import slugify
@@ -330,6 +336,45 @@ async def get_papers():
                 title = frontmatter.get("title") or slug
         papers.append({"slug": slug, "title": title})
     return {"papers": papers}
+
+
+class _CreateFolderPayload(BaseModel):
+    name: str
+
+
+@app.get("/api/paper-folders")
+async def get_paper_folders():
+    return {"folders": list_folders(NODE_STORE_ROOT)}
+
+
+@app.post("/api/paper-folders")
+async def post_paper_folder(payload: _CreateFolderPayload):
+    try:
+        return create_folder(NODE_STORE_ROOT, payload.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/paper-folders/{folder_id}")
+async def delete_paper_folder(folder_id: str):
+    try:
+        delete_folder(NODE_STORE_ROOT, folder_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"deleted": folder_id}
+
+
+class _SetPaperFolderPayload(BaseModel):
+    folder_id: str | None = None
+
+
+@app.put("/api/papers/{slug}/folder")
+async def put_paper_folder(slug: str, payload: _SetPaperFolderPayload):
+    try:
+        set_paper_folder(NODE_STORE_ROOT, slug, payload.folder_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"slug": slug, "folder_id": payload.folder_id}
 
 
 @app.get("/api/concepts")
@@ -843,6 +888,11 @@ async def delete_paper(slug: str):
         remove_source(NODE_STORE_ROOT, slug)
     except Exception as exc:  # noqa: BLE001 - node_store 정리 실패가 나머지 삭제를 막지 않음
         print(f"  [경고] node_store 참조 정리 실패: {exc}")
+
+    try:
+        set_paper_folder(NODE_STORE_ROOT, slug, None)
+    except Exception as exc:  # noqa: BLE001 - 폴더 정리 실패가 나머지 삭제를 막지 않음
+        print(f"  [경고] 논문 폴더 정리 실패: {exc}")
 
     return {"slug": slug, "local_error": local_error, "remote_error": remote_error}
 
