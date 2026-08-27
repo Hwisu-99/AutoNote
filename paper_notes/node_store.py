@@ -645,7 +645,7 @@ def delete_node(store_root: str, node_type: str, slug: str) -> dict:
     return frontmatter
 
 
-def remove_source(store_root: str, source_slug: str) -> None:
+def remove_source(store_root: str, source_slug: str) -> list[tuple[str, str, bool]]:
     """source_slug(논문 slug)를 모든 concept/entity 노드 파일의 sources[]에서 제거한다.
 
     두 곳에서 쓰인다: (1) 논문 삭제 시 - vault/Supabase에서 노트를 지워도 지금까진
@@ -656,7 +656,12 @@ def remove_source(store_root: str, source_slug: str) -> None:
     제거 후 sources가 비면(다른 논문도 이 노드를 참조하지 않으면) 파일 자체를 삭제한다 -
     아무 논문도 안 쓰는 개념/용어를 굳이 남겨둘 이유가 없다. sources가 남아있으면
     _write_node_file()로 다시 써서 "## 등장 논문" 자동 섹션도 같이 갱신하고, 사용자가
-    남긴 개인 메모(user_section)는 그대로 보존한다."""
+    남긴 개인 메모(user_section)는 그대로 보존한다.
+
+    영향받은 (node_type, slug, 파일이 삭제됐는지) 목록을 반환한다 - 호출부(app.py)가
+    이 논문 하나 때문에 시스템 전체에서 몇 개나 어떤 노드가 바뀌었는지 미리 알 방법이
+    없어서, Neo4j 미러 동기화(삭제 or 갱신)를 어느 노드에 해야 할지 알려주는 용도다."""
+    affected: list[tuple[str, str, bool]] = []
     for node_type, dir_name in _DIR_BY_TYPE.items():
         folder = Path(store_root) / dir_name
         if not folder.is_dir():
@@ -667,11 +672,15 @@ def remove_source(store_root: str, source_slug: str) -> None:
             if not any(s.get("slug") == source_slug for s in sources):
                 continue
             frontmatter["sources"] = [s for s in sources if s.get("slug") != source_slug]
+            slug = frontmatter["slug"]
             if frontmatter["sources"]:
                 user_section = _extract_user_section(path)
                 _write_node_file(path, frontmatter, user_section)
+                affected.append((node_type, slug, False))
             else:
                 path.unlink()
+                affected.append((node_type, slug, True))
+    return affected
 
 
 def find_entities_by_concept(store_root: str, concept_slug: str) -> list[dict]:
@@ -793,10 +802,11 @@ def link_node_to_paper(
     없기 때문이다. 이때는 sources에 slug/title 없이 concept_slug만 있는 항목이
     생긴다("논문과 무관하게 이 concept에 속한다"는 뜻) - graph_builder.py는
     concept_slug만 유효하면 논문 유무와 무관하게 concept->entity 에지를 만들므로
-    이 항목만으로도 그래프에 정상적으로 나타난다. paper_slug=None인 호출이
-    여러 번 있어도(다른 논문 없는 concept에 또 붙이는 등) 같은 슬롯(slug=None)을
-    덮어써 항목이 하나로 유지된다 - "논문 없는 연결"은 개념상 한 번에 하나만
-    의미가 있다.
+    이 항목만으로도 그래프에 정상적으로 나타난다. 같은 entity를 서로 다른(둘 다
+    paper_slug 없는) concept에 여러 번 연결해도 각각 별개의 항목으로 쌓인다
+    (concept_slug가 다르면 다른 관계이므로) - 한 entity가 논문 없는 concept
+    여러 개에 동시에 속할 수 있다. 같은 concept에 다시 연결하는 것만 기존
+    항목을 그대로 재사용한다(중복 방지).
 
     호출부(app.py)가 node_type이 entity이고 concept_slug가 있을 때만
     paper_slug=None을 허용한다 - concept 자신은 논문 없이 다른 무언가에
@@ -807,13 +817,22 @@ def link_node_to_paper(
     "이미 있으니 그냥 둔다"로 처리하면, LLM이 같은 논문에서 뽑은 entity/concept을
     사용자가 나중에 드래그로 이어주려 해도(entity->note, concept->note를
     entity->concept->note로 바꾸는, 실제로 자주 나올 케이스) 아무 반응이 없는
-    것처럼 보이는 채로 조용히 무시되는 버그가 있었다."""
+    것처럼 보이는 채로 조용히 무시되는 버그가 있었다. paper_slug가 실제
+    논문이면(None이 아니면) 이렇게 "그 논문 슬롯 하나"만 보고 판단하는 게 맞다
+    - 같은 논문 안에서 이 entity는 어차피 concept 하나에만 묶일 수 있으므로.
+    paper_slug가 None일 때는 이 기준을 그대로 쓰면 안 된다(위 문단 참고 - 슬롯이
+    여러 개 있어야 함) - 그래서 두 경우를 아래에서 다르게 찾는다."""
     path = _node_dir(store_root, node_type) / f"{node_slug}.md"
     if not path.is_file():
         raise FileNotFoundError(f"노드 파일을 찾을 수 없습니다: {node_slug}")
     frontmatter = _read_frontmatter(path)
     sources = frontmatter.get("sources") or []
-    existing = next((s for s in sources if s.get("slug") == paper_slug), None)
+    if paper_slug is None:
+        existing = next(
+            (s for s in sources if s.get("slug") is None and s.get("concept_slug") == concept_slug), None
+        )
+    else:
+        existing = next((s for s in sources if s.get("slug") == paper_slug), None)
     if existing is None:
         sources.append({"slug": paper_slug, "title": paper_title, "concept_slug": concept_slug})
     else:

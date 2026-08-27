@@ -10,3 +10,7 @@ pyyaml
 fastapi
 uvicorn[standard]
 python-multipart
+neo4j
+sentence-transformers
+mcp[cli]
+httpx

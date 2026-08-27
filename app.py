@@ -44,6 +44,11 @@ from paper_notes.node_store import (
     unlink_concept_from_entity,
     update_user_section,
 )
+from paper_notes.graph_db import Neo4jNotConfigured
+from paper_notes.graph_db import delete_node_from_graph as _gdb_delete_node
+from paper_notes.graph_db import search as graph_db_search
+from paper_notes.graph_db import sync_node as _gdb_sync_node
+from paper_notes.graph_db import sync_paper as _gdb_sync_paper
 from paper_notes.obsidian_writer import delete_note as delete_local_note
 from paper_notes.obsidian_writer import write_note, write_summary_json
 from paper_notes.paper_folders import (
@@ -69,6 +74,39 @@ def get_vault_path() -> str:
             detail="OBSIDIAN_VAULT_PATH가 설정되어 있지 않거나 존재하지 않는 폴더입니다. .env를 확인하세요.",
         )
     return vault_path
+
+
+# node_store(.md 파일)를 바꾸는 모든 엔드포인트가, 성공하면 그 변경을 Neo4j
+# 미러(paper_notes/graph_db.py)에도 반영한다 - GraphRAG 검색(MCP)이 항상 최신
+# 상태를 보게 하기 위함. Neo4j가 아직 설정 안 됐거나(.env 미기입) 일시적으로
+# 응답이 없어도 이 동기화 실패가 방금 성공한 실제 변경(node_store)까지 되돌리거나
+# 사용자에게 에러로 보여선 안 되므로, 항상 조용히 삼키고 로그만 남긴다(Supabase
+# 업로드 실패를 처리하는 기존 패턴과 같다).
+def _sync_node(node_type: str, slug: str) -> None:
+    try:
+        _gdb_sync_node(node_type, slug)
+    except Neo4jNotConfigured:
+        pass
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [경고] Neo4j 동기화 실패({node_type}:{slug}): {exc}")
+
+
+def _sync_paper(slug: str, title: str, tags: list[str] | None = None) -> None:
+    try:
+        _gdb_sync_paper(slug, title, tags)
+    except Neo4jNotConfigured:
+        pass
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [경고] Neo4j 논문 동기화 실패({slug}): {exc}")
+
+
+def _delete_node_from_graph(node_type: str, slug: str) -> None:
+    try:
+        _gdb_delete_node(node_type, slug)
+    except Neo4jNotConfigured:
+        pass
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [경고] Neo4j 노드 삭제 동기화 실패({node_type}:{slug}): {exc}")
 
 
 def _event(stage: str, percent: int, message: str, **extra) -> str:
@@ -181,7 +219,11 @@ async def run_pipeline(tmp_path: str, vault_path: str, request: Request, overwri
         yield _event("nodes", 65, "concept/entity 노드 파일 갱신 중...")
         try:
             if overwrite_slug:
-                remove_source(NODE_STORE_ROOT, overwrite_slug)
+                for node_type, node_slug, was_deleted in remove_source(NODE_STORE_ROOT, overwrite_slug):
+                    if was_deleted:
+                        _delete_node_from_graph(node_type, node_slug)
+                    else:
+                        _sync_node(node_type, node_slug)
             # concept을 먼저 처리해 최종 slug를 모아둔다 - entity가 이 논문에서
             # 어느 concept 밑에 묶이는지는 Claude가 이 논문만 보고 낸 원본 라벨이
             # 아니라, 실제로 확정된(기존 노드에 병합됐을 수도 있는) concept의
@@ -193,15 +235,19 @@ async def run_pipeline(tmp_path: str, vault_path: str, request: Request, overwri
                     title_slug, summary["title"], category=c.get("category"),
                     description=c.get("description", ""), note=c.get("note", ""),
                 )
+                _sync_node("concept", concept_slug_by_id[c["id"]])
             for e in summary.get("entities", []):
-                resolve_or_create_node(
+                entity_slug = resolve_or_create_node(
                     NODE_STORE_ROOT, "entity", e["label"], e.get("aliases", []),
                     title_slug, summary["title"],
                     description=e.get("description", ""), note=e.get("note", ""),
                     concept_slug=concept_slug_by_id.get(e.get("concept_id")) if e.get("concept_id") else None,
                 )
+                _sync_node("entity", entity_slug)
         except Exception as exc:  # noqa: BLE001 - 노드 파일 갱신 실패가 파이프라인 전체를 막지 않음
             print(f"  [경고] concept/entity 노드 파일 갱신 실패: {exc}")
+
+        _sync_paper(title_slug, summary["title"], summary.get("tags", []))
 
         yield _event("note", 90, "Obsidian 노트 저장 중...")
         note_path = write_note(vault_path, summary, title_slug)
@@ -377,6 +423,16 @@ async def put_paper_folder(slug: str, payload: _SetPaperFolderPayload):
     return {"slug": slug, "folder_id": payload.folder_id}
 
 
+@app.get("/api/graph-search")
+async def get_graph_search(q: str, top_k: int = 10):
+    """GraphRAG 하이브리드 검색(벡터+풀텍스트+그래프 확장, paper_notes/graph_db.py
+    참고) - MCP 서버의 search_graph 툴이 그대로 감싸서 쓴다."""
+    try:
+        return {"results": graph_db_search(q, top_k)}
+    except Neo4jNotConfigured as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
 @app.get("/api/concepts")
 async def get_concepts(paper_slug: str):
     """paper_slug 논문에 이미 연결된(그 논문이 sources에 있는) concept 노드
@@ -442,6 +498,7 @@ async def add_concept(slug: str, payload: _AddConceptPayload):
     except FileExistsError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    _sync_node("concept", node_slug)
     return {"slug": node_slug}
 
 
@@ -477,6 +534,7 @@ async def add_entity(slug: str, payload: _AddEntityPayload):
     except FileExistsError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    _sync_node("entity", node_slug)
     return {"slug": node_slug}
 
 
@@ -516,6 +574,7 @@ async def create_orphan_node(payload: _CreateOrphanNodePayload):
         raise _duplicate_node_http_exception(exc) from exc
     except FileExistsError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    _sync_node(payload.type, node_slug)
     return {"slug": node_slug}
 
 
@@ -546,6 +605,7 @@ async def link_node(node_type: str, slug: str, payload: _LinkNodePayload):
             link_node_to_paper(NODE_STORE_ROOT, node_type, slug, None, None, concept_slug=payload.concept_slug)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        _sync_node(node_type, slug)
         return {"ok": True}
 
     vault_path = get_vault_path()
@@ -562,6 +622,7 @@ async def link_node(node_type: str, slug: str, payload: _LinkNodePayload):
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    _sync_node(node_type, slug)
     return {"ok": True}
 
 
@@ -573,12 +634,27 @@ async def delete_node_source(node_type: str, slug: str, paper_slug: str):
     데이터를 보존하기 위해서 - 완전 삭제는 별도의 노드 삭제 기능을 써야 함)."""
     if node_type not in ("concept", "entity"):
         raise HTTPException(status_code=404, detail="알 수 없는 노드 타입입니다.")
+
+    # concept의 논문 연결을 끊으면 그 concept 밑에 있던 entity들의 sources도
+    # 같이 바뀔 수 있다(paperless로 전환되거나, 중복 항목이면 아예 삭제됨 -
+    # node_store.remove_source_from_node/_unlink_paper_from_concept_entities
+    # 참고). 그 entity들이 누구인지는 concept 파일이 아직 안 바뀐 지금
+    # 시점에 미리 찾아둬야 한다(파일이 바뀐 뒤엔 이 concept_slug 연결 자체가
+    # 이미 끊겼을 수 있어 못 찾을 수도 있음).
+    affected_entity_slugs = (
+        [e["slug"] for e in find_entities_by_concept(NODE_STORE_ROOT, slug)] if node_type == "concept" else []
+    )
+
     try:
         removed = remove_source_from_node(NODE_STORE_ROOT, node_type, slug, paper_slug)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     if not removed:
         raise HTTPException(status_code=404, detail="그 논문과의 연결을 찾을 수 없습니다.")
+
+    _sync_node(node_type, slug)
+    for entity_slug in affected_entity_slugs:
+        _sync_node("entity", entity_slug)
     return {"ok": True}
 
 
@@ -597,6 +673,7 @@ async def delete_entity_concept_link(slug: str, concept_slug: str):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     if not changed:
         raise HTTPException(status_code=404, detail="그 concept과의 연결을 찾을 수 없습니다.")
+    _sync_node("entity", slug)
     return {"ok": True}
 
 
@@ -666,6 +743,7 @@ async def put_node_notes(node_type: str, slug: str, payload: _NotesPayload):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    _sync_node(node_type, slug)
     return {"ok": True}
 
 
@@ -694,6 +772,7 @@ async def add_node_alias(node_type: str, slug: str, payload: _AliasPayload):
         ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _sync_node(node_type, slug)
     return {"aliases": aliases}
 
 
@@ -707,6 +786,7 @@ async def remove_node_alias(node_type: str, slug: str, payload: _AliasPayload):
         aliases = remove_alias(NODE_STORE_ROOT, node_type, slug, payload.alias)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    _sync_node(node_type, slug)
     return {"aliases": aliases}
 
 
@@ -737,6 +817,7 @@ async def put_node_display_label(node_type: str, slug: str, payload: _DisplayLab
         ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _sync_node(node_type, slug)
     return result
 
 
@@ -755,6 +836,7 @@ async def add_node_category(slug: str, payload: _CategoryPayload):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _sync_node("concept", slug)
     return {"categories": categories}
 
 
@@ -766,6 +848,7 @@ async def remove_node_category(slug: str, payload: _CategoryPayload):
         categories = remove_category(NODE_STORE_ROOT, slug, payload.category)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    _sync_node("concept", slug)
     return {"categories": categories}
 
 
@@ -814,23 +897,32 @@ async def delete_node_endpoint(node_type: str, slug: str, cascade_entities: bool
     if node_type not in ("concept", "entity"):
         raise HTTPException(status_code=404, detail="알 수 없는 노드 타입입니다.")
 
-    # cascade로 지울 entity는 concept 자신을 지우기 전에 찾아둔다(순서는 사실
-    # 상관없다 - entity의 sources에 있는 concept_slug는 concept 파일 삭제와
-    # 무관하게 그대로 남아있으므로).
-    cascade_entity_slugs: list[str] = []
-    if node_type == "concept" and cascade_entities:
-        cascade_entity_slugs = [e["slug"] for e in find_entities_by_concept(NODE_STORE_ROOT, slug)]
+    # concept 밑에 걸려있던 entity는 concept 자신을 지우기 전에 찾아둔다(순서는
+    # 사실 상관없다 - entity의 sources에 있는 concept_slug는 concept 파일 삭제와
+    # 무관하게 그대로 남아있으므로). cascade_entities=false여도 이 목록이
+    # 필요하다 - 그 entity들은 파일은 그대로 남지만 Neo4j 미러에서는 이제
+    # concept_slug가 죽은 참조가 되었으니 "논문에 직접 연결"로 다시 동기화해야
+    # 한다(graph_db.sync_node()의 concept_slug 유효성 검사 참고).
+    linked_entity_slugs: list[str] = []
+    if node_type == "concept":
+        linked_entity_slugs = [e["slug"] for e in find_entities_by_concept(NODE_STORE_ROOT, slug)]
 
     try:
         delete_node(NODE_STORE_ROOT, node_type, slug)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    _delete_node_from_graph(node_type, slug)
 
-    for entity_slug in cascade_entity_slugs:
-        try:
-            delete_node(NODE_STORE_ROOT, "entity", entity_slug)
-        except FileNotFoundError:
-            continue
+    if cascade_entities:
+        for entity_slug in linked_entity_slugs:
+            try:
+                delete_node(NODE_STORE_ROOT, "entity", entity_slug)
+            except FileNotFoundError:
+                continue
+            _delete_node_from_graph("entity", entity_slug)
+    else:
+        for entity_slug in linked_entity_slugs:
+            _sync_node("entity", entity_slug)
 
     return {"ok": True}
 
@@ -885,9 +977,15 @@ async def delete_paper(slug: str):
         remote_error = str(exc)
 
     try:
-        remove_source(NODE_STORE_ROOT, slug)
+        for node_type, node_slug, was_deleted in remove_source(NODE_STORE_ROOT, slug):
+            if was_deleted:
+                _delete_node_from_graph(node_type, node_slug)
+            else:
+                _sync_node(node_type, node_slug)
     except Exception as exc:  # noqa: BLE001 - node_store 정리 실패가 나머지 삭제를 막지 않음
         print(f"  [경고] node_store 참조 정리 실패: {exc}")
+
+    _delete_node_from_graph("paper", slug)
 
     try:
         set_paper_folder(NODE_STORE_ROOT, slug, None)

@@ -3,6 +3,11 @@ venv/
 __pycache__/
 *.pyc
 
+# Claude Code 로컬 설정/워크트리 - 머신별 상태라 버전관리 제외
+/.claude/
+# MCP 서버 등록 설정. 이 컴퓨터의 절대경로가 하드코딩되어 있어 머신마다 달라짐
+/.mcp.json
+
 # 클로드 테스트용 임시 폴더. 실제 배포 시에는 필요 없음
 /offline_test
 
