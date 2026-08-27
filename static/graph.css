@@ -31,14 +31,18 @@ body.node-mode #nodeModeView { display: flex; }
 .graph-title { font-weight: 600; font-size: .9rem; color: var(--text-muted); margin-bottom: 8px; }
 .graph-hint { font-size: .78rem; color: var(--text-muted); margin-bottom: 10px; }
 .graph-toolbar-wrap { position: relative; }
-.graph-toolbar { display: flex; gap: 8px; margin-bottom: 10px; }
+/* 패널이 좁아지면(사이드바 노출 상태 등) 버튼/토글 텍스트가 그 안에서 줄바꿈되며
+   글자가 세로로 깨져 보이는 문제가 있었다 - flex-wrap으로 아이템 단위(버튼/토글
+   하나씩)로 다음 줄로 넘어가게 하고, 각 아이템은 아래에서 white-space: nowrap +
+   flex-shrink: 0으로 줄어들거나 안에서 줄바꿈되지 않게 고정한다. */
+.graph-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin-bottom: 10px; }
 /* "+ 새 노드" 패널도 노드 뷰 쪽과 같은 이유로 절대 위치로 띄운다 - 열려도
    그래프 SVG가 아래로 밀려나지 않게. top:100%로 이 wrap(툴바 높이만큼만 차지)
    바로 아래에 붙이므로 툴바 줄 수가 바뀌어도(반응형 등) 따로 좌표를 안 맞춰도 된다. */
 #createNodeStandaloneContainer { position: absolute; top: 100%; left: 0; z-index: 5; }
 .graph-btn {
   background: none; border: 1px solid var(--border); border-radius: 999px;
-  color: var(--text-muted); font-size: .8rem; font-weight: 600;
+  color: var(--text-muted); font-size: .8rem; font-weight: 600; white-space: nowrap; flex-shrink: 0;
   padding: 5px 14px; cursor: pointer; transition: border-color .15s ease, color .15s ease, background .15s ease;
 }
 .graph-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
@@ -48,6 +52,7 @@ body.node-mode #nodeModeView { display: flex; }
 .switch-wrap {
   display: inline-flex; align-items: center; gap: 8px; cursor: pointer;
   font-size: .8rem; font-weight: 600; color: var(--text-muted); user-select: none;
+  white-space: nowrap; flex-shrink: 0;
 }
 .switch-wrap input { position: absolute; opacity: 0; width: 0; height: 0; }
 .switch {
@@ -61,6 +66,44 @@ body.node-mode #nodeModeView { display: flex; }
 }
 .switch-wrap input:checked + .switch { background: var(--accent); }
 .switch-wrap input:checked + .switch::before { transform: translateX(14px); }
+/* 노드 검색창: 툴바 맨 오른쪽에 붙이고(margin-left: auto), 결과 드롭다운은
+   그 바로 아래에 절대 위치로 띄운다(#createNodeStandaloneContainer와 같은 패턴). */
+.graph-search-wrap { position: relative; margin-left: auto; flex-shrink: 0; }
+.graph-search-input {
+  width: 160px; font: inherit; font-size: .8rem; padding: 5px 10px;
+  border: 1px solid var(--border); border-radius: 999px;
+  background: var(--surface); color: var(--text); outline: none;
+  transition: border-color .15s ease, width .15s ease;
+}
+.graph-search-input:focus { border-color: var(--accent); width: 220px; }
+.graph-search-results {
+  display: none; position: absolute; top: 100%; right: 0; margin-top: 6px; z-index: 10;
+  width: 240px; max-height: 260px; overflow-y: auto;
+  border: 1px solid var(--border); border-radius: 10px;
+  background: var(--surface); box-shadow: var(--shadow); padding: 4px;
+}
+.graph-search-results.open { display: block; }
+.graph-search-result {
+  width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  background: none; border: none; text-align: left; font: inherit; font-size: .82rem;
+  color: var(--text); padding: 7px 8px; border-radius: 6px; cursor: pointer;
+}
+.graph-search-result:hover { background: var(--accent-soft); color: var(--accent); }
+.graph-search-result-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.graph-search-result-type { flex-shrink: 0; font-size: .72rem; color: var(--text-muted); }
+.graph-search-result:hover .graph-search-result-type { color: inherit; }
+.graph-search-empty { font-size: .82rem; color: var(--text-muted); padding: 7px 8px; }
+
+/* 검색어와 일치하는 노드는 강조 테두리로, 그 외(hover 강조와 같은 .dimmed)는
+   흐리게 만든다 - Obsidian 그래프 뷰의 검색 하이라이트와 같은 방식. 원래
+   타입별 색(주황/파랑/회색 등)은 그대로 두고 테두리만 검은색(--text, 다크
+   테마에선 자연히 흰색)으로 얇게 둘러서 "매칭됨"을 표시한다 - 주황 테두리를
+   note 타입(원래도 주황 채움)에 겹치면 뭉개져 과하게 두꺼워 보였다. */
+.search-match { stroke: var(--text) !important; stroke-width: 2px !important; }
+/* 라벨은 색/굵기 모두 일반(미강조) 라벨과 완전히 같게 둔다 - 매칭 노드의
+   라벨은 그냥 dimmed가 안 걸려서(옆의 .dimmed 참고) 흐려진 나머지 라벨들
+   사이에서 원래 밝기 그대로 도드라져 보이는 것만으로 충분하다. */
+
 #graphSvg { flex: 1; width: 100%; }
 #graphSummary:not(:empty) { margin-top: 16px; }
 

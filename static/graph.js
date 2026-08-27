@@ -58,6 +58,113 @@ const _nodePositions = new Map();
 // 드래그로 옮기면(수동으로 자리를 정했으므로) 이 항목은 지운다.
 const _orphanAnchors = new Map();
 
+// ---- 노드 검색 ----
+// renderGraph()가 매번 새로 그리는 노드/라벨/에지 selection과 zoom behavior를
+// 여기 모듈 스코프에 저장해둔다 - 검색창(바깥 스코프)에서 하이라이트를 걸거나
+// 특정 노드로 화면을 이동(panToPoint)시키려면 그 참조가 필요하기 때문이다.
+let _nodeSel = null;
+let _labelSel = null;
+let _linkSel = null;
+let _graphZoom = null;
+
+const NODE_TYPE_SEARCH_LABELS = { note: '논문', concept: '개념', entity: '용어', tag: '태그', attachment: '첨부' };
+const graphSearchInput = document.getElementById('graphSearchInput');
+const graphSearchResultsEl = document.getElementById('graphSearchResults');
+
+// 지금 켜진 표시 토글(태그/용어/첨부파일)에 맞춰, 실제로 화면에 보이는 노드
+// 중에서만 라벨 부분일치(대소문자 무시)로 찾는다 - 숨겨진 노드가 검색되면
+// 하이라이트할 원 자체가 없어 클릭해도 아무 반응이 없는 것처럼 보인다.
+function matchGraphNodes(query) {
+  const q = query.trim().toLowerCase();
+  if (!q || !currentGraphData) return [];
+  return currentGraphData.nodes.filter((n) => {
+    if (hideTagNodes && n.type === 'tag') return false;
+    if (hideEntityNodes && n.type === 'entity') return false;
+    if (hideAttachmentNodes && n.type === 'attachment') return false;
+    return n.label.toLowerCase().includes(q);
+  });
+}
+
+function clearSearchHighlight() {
+  _nodeSel?.classed('dimmed', false).classed('search-match', false);
+  _labelSel?.classed('dimmed', false);
+  _linkSel?.classed('dimmed', false);
+}
+
+function applySearchHighlight(matchedIds) {
+  if (!_nodeSel || !matchedIds.size) { clearSearchHighlight(); return; }
+  _nodeSel.classed('search-match', (d) => matchedIds.has(d.id)).classed('dimmed', (d) => !matchedIds.has(d.id));
+  // 라벨은 스타일 강조 없이 dimmed 여부만 반영한다 - search-match 원(위)만
+  // 검은 테두리로 강조되고, 라벨은 흐려지지만 않으면 충분히 도드라진다.
+  _labelSel.classed('dimmed', (d) => !matchedIds.has(d.id));
+  // 매칭된 노드만 도드라져 보이게, 에지는 어느 쪽이든 전부 흐리게 둔다.
+  _linkSel.classed('dimmed', true);
+}
+
+function renderSearchResults(matches) {
+  if (!matches.length) {
+    graphSearchResultsEl.innerHTML = '<div class="graph-search-empty">일치하는 노드가 없습니다.</div>';
+    graphSearchResultsEl.classList.add('open');
+    return;
+  }
+  graphSearchResultsEl.innerHTML = '';
+  matches.slice(0, 12).forEach((n) => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'graph-search-result';
+    item.innerHTML = `<span class="graph-search-result-label">${escapeHtml(n.label)}</span><span class="graph-search-result-type">${NODE_TYPE_SEARCH_LABELS[n.type] || n.type}</span>`;
+    item.addEventListener('click', () => focusSearchResult(n));
+    graphSearchResultsEl.appendChild(item);
+  });
+  graphSearchResultsEl.classList.add('open');
+}
+
+// 지금 확대/축소 배율은 유지한 채, (x, y)가 화면 중앙에 오도록 부드럽게
+// 이동시킨다 - 노드가 힘 시뮬레이션 중이라 위치가 계속 바뀌므로 정확한 좌표보다는
+// "그 근처로 화면을 옮겨준다"는 정도의 목적이다.
+function panToPoint(x, y) {
+  if (!_graphZoom) return;
+  const svgEl = document.getElementById('graphSvg');
+  const width = svgEl.clientWidth || 360;
+  const height = svgEl.clientHeight || 520;
+  const scale = d3.zoomTransform(svgEl).k || 1;
+  const transform = d3.zoomIdentity.translate(width / 2, height / 2).scale(scale).translate(-x, -y);
+  graphSvg.transition().duration(400).call(_graphZoom.transform, transform);
+}
+
+function focusSearchResult(n) {
+  applySearchHighlight(new Set([n.id]));
+  const pos = _nodePositions.get(n.id);
+  if (pos) panToPoint(pos.x, pos.y);
+  graphSearchResultsEl.classList.remove('open');
+}
+
+function clearSearch() {
+  graphSearchInput.value = '';
+  graphSearchResultsEl.innerHTML = '';
+  graphSearchResultsEl.classList.remove('open');
+  clearSearchHighlight();
+}
+
+graphSearchInput.addEventListener('input', () => {
+  if (!graphSearchInput.value.trim()) { clearSearch(); return; }
+  const matches = matchGraphNodes(graphSearchInput.value);
+  applySearchHighlight(new Set(matches.map((n) => n.id)));
+  renderSearchResults(matches);
+});
+
+graphSearchInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') { clearSearch(); graphSearchInput.blur(); return; }
+  if (event.key === 'Enter') {
+    const matches = matchGraphNodes(graphSearchInput.value);
+    if (matches.length) focusSearchResult(matches[0]);
+  }
+});
+
+document.addEventListener('click', (event) => {
+  if (!event.target.closest('.graph-search-wrap')) graphSearchResultsEl.classList.remove('open');
+});
+
 // 그래프에 지금 렌더링된 노드(타입 무관) 중 (x, y)에 가장 가까운 것의 id를 찾는다 -
 // orphan 생성 시 "이 노드는 저 노드 근처에 있다"고 기억해두는 기준점으로 쓴다.
 function findNearestNodeId(x, y) {
@@ -290,6 +397,7 @@ toggleExpandInput.addEventListener('change', () => {
 });
 
 async function loadGraph(focusSlugs, onlyFocus = false) {
+  clearSearch(); // 그래프가 통째로 새로 그려지면 이전 검색 결과/하이라이트는 더 이상 유효하지 않다
   focusSlugs = focusSlugs ? (Array.isArray(focusSlugs) ? focusSlugs : [focusSlugs]) : [];
   currentFocusSlugs = onlyFocus ? focusSlugs : [];
   if (!onlyFocus) {
@@ -334,23 +442,23 @@ function renderGraph(data) {
   graphSvg.attr('viewBox', [0, 0, width, height]);
 
   const g = graphSvg.append('g');
-  graphSvg.call(
-    d3.zoom()
-      .scaleExtent([0.3, 3])
-      // 노드(hitArea) 위에서 시작된 이벤트는 배경 팬으로 취급하지 않는다 - 이걸
-      // 안 하면 hitArea의 d3.drag()로 노드를 옮기는 동안 같은 이벤트가 부모인
-      // graphSvg까지 버블링돼 d3.zoom()도 동시에 팬을 시작해버려서, 노드를
-      // 드래그하면 배경도 같이 움직이는 것처럼 보인다. drag() 쪽에서
-      // stopPropagation()도 걸어두지만, event.target을 직접 확인하는 이 필터가
-      // 더 확실하다(d3-zoom 공식 문서가 권장하는 패턴).
-      .filter((event) => !event.target.closest('.node-hit-area'))
-      // 팬 가능 범위를 캔버스 크기 기준으로 제한한다. 제한이 없으면 마우스처럼
-      // 한 동작에 큰 픽셀 이동량이 들어오는 입력 장치에서 그래프 전체가 뷰포트
-      // 밖으로 팬되어 "사라진 것처럼" 보이는 문제가 있었다(트랙패드는 이동
-      // 거리가 작아 잘 드러나지 않았음).
-      .translateExtent([[-width, -height], [width * 2, height * 2]])
-      .on('zoom', (event) => g.attr('transform', event.transform))
-  );
+  const zoomBehavior = d3.zoom()
+    .scaleExtent([0.3, 3])
+    // 노드(hitArea) 위에서 시작된 이벤트는 배경 팬으로 취급하지 않는다 - 이걸
+    // 안 하면 hitArea의 d3.drag()로 노드를 옮기는 동안 같은 이벤트가 부모인
+    // graphSvg까지 버블링돼 d3.zoom()도 동시에 팬을 시작해버려서, 노드를
+    // 드래그하면 배경도 같이 움직이는 것처럼 보인다. drag() 쪽에서
+    // stopPropagation()도 걸어두지만, event.target을 직접 확인하는 이 필터가
+    // 더 확실하다(d3-zoom 공식 문서가 권장하는 패턴).
+    .filter((event) => !event.target.closest('.node-hit-area'))
+    // 팬 가능 범위를 캔버스 크기 기준으로 제한한다. 제한이 없으면 마우스처럼
+    // 한 동작에 큰 픽셀 이동량이 들어오는 입력 장치에서 그래프 전체가 뷰포트
+    // 밖으로 팬되어 "사라진 것처럼" 보이는 문제가 있었다(트랙패드는 이동
+    // 거리가 작아 잘 드러나지 않았음).
+    .translateExtent([[-width, -height], [width * 2, height * 2]])
+    .on('zoom', (event) => g.attr('transform', event.transform));
+  graphSvg.call(zoomBehavior);
+  _graphZoom = zoomBehavior; // 검색 결과 클릭 시 panToPoint()가 이 인스턴스로 화면을 이동시킨다
 
   const visibleNodes = data.nodes.filter((n) => {
     if (hideTagNodes && n.type === 'tag') return false;
@@ -543,6 +651,13 @@ function renderGraph(data) {
   // label(.graph-label)은 CSS에서 pointer-events: none이라 여기 handler를 달아도
   // 실제로는 절대 발동하지 않는다 - 노드 상호작용은 hitArea 하나로 통일한다.
 
+  // 검색창(모듈 스코프)이 이 렌더의 node/label/link selection에 하이라이트를
+  // 걸 수 있도록 참조를 넘겨둔다 - loadGraph()마다 renderGraph가 다시 불려
+  // selection 자체가 매번 새로 만들어지므로 매번 갱신해야 한다.
+  _nodeSel = node;
+  _labelSel = label;
+  _linkSel = link;
+
   // 호버한 노드와 직접 연결된 노드/에지만 원래대로 두고 나머지는 흐리게 만든다
   // (Obsidian 그래프 뷰의 호버 강조와 동일한 방식). 강조 자체는 눈에 보이는 node/label에
   // 적용하지만, hover가 시작되는 판정 영역은 더 넓은 hitArea 기준이다.
@@ -651,9 +766,19 @@ function renderGraph(data) {
   }
 
   function clearHighlight() {
+    label.classed('hovered', false);
+    link.classed('highlighted', false);
+    // 검색어가 입력된 채로 노드에 호버했다 벗어나는 경우, hover 강조가 걷히면
+    // 검색 하이라이트 상태로 되돌아가야 한다(전부 지우면 검색 결과가 사라진
+    // 것처럼 보인다) - 없으면 평소처럼 완전히 지운다.
+    const activeQuery = graphSearchInput.value.trim();
+    if (activeQuery) {
+      applySearchHighlight(new Set(matchGraphNodes(activeQuery).map((n) => n.id)));
+      return;
+    }
     node.classed('dimmed', false);
-    label.classed('dimmed', false).classed('hovered', false);
-    link.classed('dimmed', false).classed('highlighted', false);
+    label.classed('dimmed', false);
+    link.classed('dimmed', false);
   }
 
   simulation.on('tick', () => {
