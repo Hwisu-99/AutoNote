@@ -321,15 +321,15 @@ function buildFolderBlock(folder) {
     wrap.classList.add('dragging');
   });
   header.addEventListener('dragend', () => wrap.classList.remove('dragging'));
-  // 드래그의 대안 - 폴더를 통째로 우클릭하면 지금 없는 Brain들로 바로
-  // 배정할 수 있는 메뉴가 뜬다(드래그해서 Brain 탭 위에 놓는 것과 동일한
-  // moveFolderToBrain()을 호출).
+  // 드래그의 대안 - 폴더를 통째로 우클릭하면 "Brain으로 이동" 서브메뉴로
+  // 지금 있는 Brain들에 바로 배정할 수 있다(드래그해서 Brain 헤더 위에
+  // 놓는 것과 동일한 moveFolderToBrain()을 호출).
   header.addEventListener('contextmenu', (event) => {
     event.preventDefault();
     event.stopPropagation();
-    showContextMenu(event.clientX, event.clientY, buildBrainAssignItems(
-      folderBrainId(folder), (brainId) => moveFolderToBrain(folder.id, brainId),
-    ));
+    showContextMenu(event.clientX, event.clientY, [
+      buildBrainMoveItem(folderBrainId(folder), (brainId) => moveFolderToBrain(folder.id, brainId)),
+    ]);
   });
 
   const toggleBtn = document.createElement('button');
@@ -398,21 +398,27 @@ function buildPaperRow(paper) {
     row.classList.add('dragging');
   });
   row.addEventListener('dragend', () => row.classList.remove('dragging'));
-  // 드래그의 대안 - 논문 행을 우클릭하면 Brain 배정 메뉴가 뜬다. 폴더 안
-  // 논문은 movePaperToBrain()이 어차피 막으므로(그 논문만 빼서 옮기는 게
-  // 아니라 폴더째로 옮겨야 함) 메뉴 자체를 그 안내 문구 하나로 대체한다.
+  // 드래그의 대안 - 논문 행을 우클릭하면 메뉴가 뜬다. 폴더 안 논문을 다른
+  // 폴더가 아니라 "폴더 밖"으로만 빼내는 건 드래그로는 정밀한 빈 자리를
+  // 찾아 떨어뜨려야 해서 하기 어려웠다(폴더에 넣는 쪽은 폴더 블록 전체가
+  // 큰 타겟이라 쉬운 것과 대조적) - 그래서 폴더 안 논문이면 "폴더에서 빼기"
+  // 항목을 맨 위에 추가한다: 지금 폴더의 Brain 소속은 그대로 유지한 채
+  // (movePaperToBrain(slug, 그 폴더의 brain_id)) 폴더만 벗어난다. 그 아래는
+  // 평소와 같은 Brain 배정 메뉴 - 이것도 폴더 소속 논문에 그대로 쓸 수
+  // 있다(movePaperToBrain이 대상 Brain과 무관하게 항상 먼저 폴더에서
+  // 빼내므로, 폴더째로 옮길 필요 없이 이 논문 한 편만 다른 Brain으로 바로
+  // 보낼 수 있다).
   row.addEventListener('contextmenu', (event) => {
     event.preventDefault();
     event.stopPropagation();
-    if (currentFolderIdOf(slug) !== null) {
-      showContextMenu(event.clientX, event.clientY, [
-        { label: '폴더 안 논문 - 폴더째로 Brain에 옮겨주세요', onClick: () => {} },
-      ]);
-      return;
+    const folder = foldersCache.find((f) => f.paper_slugs.includes(slug));
+    const currentBrainId = folder ? folderBrainId(folder) : paperDirectBrainId(slug);
+    const items = [];
+    if (folder) {
+      items.push({ label: '폴더에서 빼기', onClick: () => movePaperToBrain(slug, currentBrainId) });
     }
-    showContextMenu(event.clientX, event.clientY, buildBrainAssignItems(
-      paperDirectBrainId(slug), (brainId) => movePaperToBrain(slug, brainId),
-    ));
+    items.push(buildBrainMoveItem(currentBrainId, (brainId) => movePaperToBrain(slug, brainId)));
+    showContextMenu(event.clientX, event.clientY, items);
   });
 
   const title = document.createElement('span');
@@ -521,6 +527,11 @@ paperListEl.addEventListener('drop', async (event) => {
 });
 
 async function movePaperToFolder(slug, folderId) {
+  // 폴더가 바뀌면 이 논문의 실질 Brain 소속도 같이 바뀔 수 있어서(폴더의
+  // brain_id로 간접 결정되므로 - get_paper_brain_id 참고), 이 엔드포인트도
+  // Neo4j를 백그라운드로 재태깅한다 - Brain 전용 액션들과 같은 실패 확인이
+  // 여기도 필요하다.
+  const sinceMs = Date.now();
   try {
     const res = await fetch(`/api/papers/${encodeURIComponent(slug)}/folder`, {
       method: 'PUT',
@@ -534,12 +545,17 @@ async function movePaperToFolder(slug, folderId) {
   }
   await loadFolders();
   renderPaperList();
+  checkBrainSyncError(sinceMs);
 }
 
 async function deleteFolderWithConfirm(folder) {
   if (!confirm(`"${folder.name}" 폴더를 삭제할까요?\n안에 있던 논문은 삭제되지 않고 "폴더 없음" 목록으로 돌아갑니다.`)) {
     return;
   }
+  // 이 폴더가 어느 Brain에 속해 있었다면 안의 논문들은 폴더가 없어지면서
+  // 실질적으로 "브레인 없음"이 된다(movePaperToFolder와 같은 이유) - Neo4j
+  // 백그라운드 재태깅 실패 확인도 같이 한다.
+  const sinceMs = Date.now();
   try {
     const res = await fetch(`/api/paper-folders/${encodeURIComponent(folder.id)}`, { method: 'DELETE' });
     if (!res.ok) throw new Error();
@@ -549,6 +565,7 @@ async function deleteFolderWithConfirm(folder) {
   }
   await loadFolders();
   renderPaperList();
+  checkBrainSyncError(sinceMs);
 }
 
 // Brain 배정/삭제/병합은 app.py가 로컬 변경 직후 바로 응답하고, Neo4j
@@ -595,6 +612,14 @@ function buildBrainAssignItems(currentBrainId, onSelect) {
   return items;
 }
 
+// 우클릭 메뉴 최상위에 Brain 이름들을 그대로 늘어놓으면(Brain이 몇 개만
+// 늘어도) 다른 항목("폴더에서 빼기" 등)과 뒤섞여 번잡해진다 - 그래서 실제
+// Brain 목록은 "Brain으로 이동" 서브메뉴(showContextMenu의 item.items) 안에
+// 넣고, 최상위에는 이 한 항목만 노출한다.
+function buildBrainMoveItem(currentBrainId, onSelect) {
+  return { label: 'Brain으로 이동', items: buildBrainAssignItems(currentBrainId, onSelect) };
+}
+
 // ---- Brain 배정/병합/삭제 --------------------------------------------------
 // Folder보다 한 단계 위 컨테이너(paper_notes/brains.py). Brain별로 묶어보기
 // 모드(buildBrainBlock)의 헤더가 드래그/우클릭 메뉴로 이 함수들을 호출한다.
@@ -617,14 +642,13 @@ async function moveFolderToBrain(folderId, brainId) {
   checkBrainSyncError(sinceMs);
 }
 
+// slug를 brainId Brain에 직접 배정한다(brainId=null이면 브레인 없음). 서버의
+// set_paper_brain()이 어차피 호출 전에 항상 remove_paper_from_all_folders()로
+// 기존 폴더 소속부터 정리하므로, 논문이 지금 어느 폴더 안에 있어도 이 호출
+// 하나로 "그 폴더에서 빠지고 + brainId에 직접 배정됨"이 한 번에 처리된다 -
+// 폴더 소속 논문을 다른 Brain(또는 브레인 없음)으로 보내려고 폴더째로 옮길
+// 필요가 없다. buildBrainAssignItems가 만드는 메뉴가 이 함수 하나로 모인다.
 async function movePaperToBrain(slug, brainId) {
-  // 폴더 안 논문은 그 폴더의 Brain을 따라가는 간접 소속이라(get_paper_brain_id
-  // 참고), loose(폴더 없음) 논문만 여기서 직접 배정한다 - 폴더 소속 논문을
-  // 옮기고 싶으면 폴더째로 드래그하게 안내한다.
-  if (currentFolderIdOf(slug) !== null) {
-    alert('폴더 안에 있는 논문은 폴더째로 Brain에 옮겨주세요.');
-    return;
-  }
   const sinceMs = Date.now();
   try {
     const res = await fetch(`/api/papers/${encodeURIComponent(slug)}/brain`, {
@@ -637,7 +661,8 @@ async function movePaperToBrain(slug, brainId) {
     alert('Brain 배정에 실패했습니다.');
     return;
   }
-  await loadBrains();
+  // 폴더 소속이 바뀌었을 수 있으므로(위 설명) foldersCache도 같이 새로고침.
+  await Promise.all([loadFolders(), loadBrains()]);
   renderPaperList();
   checkBrainSyncError(sinceMs);
 }

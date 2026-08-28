@@ -311,6 +311,11 @@ body.graph-expanded #graphSummary {
   color: var(--text); padding: 7px 10px; border-radius: 5px; cursor: pointer;
 }
 .graph-context-menu-item:hover { background: var(--accent-soft); color: var(--accent); }
+/* 서브메뉴를 여는 항목("Brain으로 이동" 등) - 라벨과 화살표(▸)를 양끝으로
+   벌린다(showContextMenu가 둘을 별도 span으로 만들어줌). */
+.graph-context-menu-item.has-submenu { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.graph-context-menu-item .submenu-arrow { color: var(--text-muted); font-size: .75rem; }
+.graph-context-menu-item.has-submenu:hover .submenu-arrow { color: var(--accent); }
 
 /* orphan 생성/자동연결 생성 패널처럼 트리거 버튼이 아니라 클릭 좌표에 떠야 하는
    create-node-panel을 감싸는 얕은 래퍼 - 패널 자체 스타일은 그대로 재사용한다. */

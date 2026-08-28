@@ -140,6 +140,26 @@ def set_paper_brain(store_root: str, paper_slug: str, brain_id: str | None) -> N
     _save(store_root, brains)
 
 
+def remove_paper_from_all_brains(store_root: str, paper_slug: str) -> None:
+    """paper_slug를 어느 Brain에 직접 속해 있든 거기서 뺀다(있으면). 폴더로
+    이동시킬 때(paper_folders.set_paper_folder) 이 함수를 같이 호출해야 한다 -
+    안 그러면, 이 논문이 전에 어느 Brain에 직접(폴더 없이) 배정된 적이 있고
+    그 뒤 어느 폴더에 들어갔다가 나중에 다시 폴더 밖으로 나왔을 때
+    (get_paper_brain_id는 폴더를 먼저 보고, 폴더가 없으면 Brain의 직접
+    paper_slugs를 본다) 지워진 줄 알았던 예전 직접 배정이 되살아나 보이는
+    유령 소속 버그가 생긴다. set_paper_brain()의 remove_paper_from_all_folders
+    호출과 대칭을 이루는 짝 - 두 함수 다 "논문은 폴더 소속과 Brain 직접
+    소속 중 하나만 가진다"는 불변식을 지키기 위한 정리 함수다."""
+    brains = _load(store_root)
+    changed = False
+    for b in brains:
+        if paper_slug in b.get("paper_slugs", []):
+            b["paper_slugs"].remove(paper_slug)
+            changed = True
+    if changed:
+        _save(store_root, brains)
+
+
 def get_paper_brain_id(store_root: str, paper_slug: str) -> str | None:
     """이 논문이 지금 어느 Brain에 속하는지 계산한다: 어느 Folder 안에 있으면
     그 Folder의 brain_id, 폴더 없이 Brain에 직접 속해 있으면 그 Brain, 둘 다

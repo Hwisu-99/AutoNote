@@ -52,6 +52,7 @@ from paper_notes.brains import (
     get_paper_brain_id,
     list_brains,
     merge_brains,
+    remove_paper_from_all_brains,
     rename_brain,
     set_paper_brain,
 )
@@ -458,11 +459,19 @@ async def post_paper_folder(payload: _CreateFolderPayload):
 
 
 @app.delete("/api/paper-folders/{folder_id}")
-async def delete_paper_folder(folder_id: str):
+async def delete_paper_folder(folder_id: str, background_tasks: BackgroundTasks):
+    """폴더가 사라지면 그 안 논문들은 자동으로 "폴더 없음"이 된다. 그 폴더가
+    어느 Brain에 속해 있었다면 그 논문들의 실질 Brain 소속도 같이
+    "브레인 없음"으로 바뀌는 셈이라(get_paper_brain_id 참고), 삭제 전에
+    영향받을 논문 slug를 미리 챙겨서 Neo4j도 백그라운드로 재태깅한다."""
+    folder = next((f for f in list_folders(NODE_STORE_ROOT) if f["id"] == folder_id), None)
     try:
         delete_folder(NODE_STORE_ROOT, folder_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if folder:
+        for paper_slug in folder.get("paper_slugs", []):
+            background_tasks.add_task(_resync_paper_brain, paper_slug)
     return {"deleted": folder_id}
 
 
@@ -471,11 +480,24 @@ class _SetPaperFolderPayload(BaseModel):
 
 
 @app.put("/api/papers/{slug}/folder")
-async def put_paper_folder(slug: str, payload: _SetPaperFolderPayload):
+async def put_paper_folder(slug: str, payload: _SetPaperFolderPayload, background_tasks: BackgroundTasks):
+    """논문을 다른 폴더로 옮기거나(또는 폴더 밖으로 뺀다). 이 논문의 실질
+    Brain 소속은 폴더의 brain_id로 간접 결정되므로(get_paper_brain_id 참고),
+    폴더만 바뀌어도 Brain이 바뀔 수 있다 - 그래서 이 엔드포인트도 Brain 전용
+    엔드포인트들과 똑같이 Neo4j 재태깅을 백그라운드로 스케줄한다.
+
+    set_paper_folder()는 폴더 소속만 관리하고 Brain 쪽(_brains.json)은 전혀
+    안 건드리므로, 이 논문이 전에 어느 Brain에 폴더 없이 직접 배정된 적이
+    있다면 그 흔적을 여기서 지워야 한다(remove_paper_from_all_brains) -
+    안 지우면 나중에 이 논문이 다시 폴더 밖으로 나왔을 때 그 오래된 직접
+    배정이 되살아나 보이는 유령 소속 버그가 생긴다(set_paper_brain()이
+    반대 방향에서 remove_paper_from_all_folders()를 부르는 것과 대칭)."""
     try:
         set_paper_folder(NODE_STORE_ROOT, slug, payload.folder_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    remove_paper_from_all_brains(NODE_STORE_ROOT, slug)
+    background_tasks.add_task(_resync_paper_brain, slug)
     return {"slug": slug, "folder_id": payload.folder_id}
 
 

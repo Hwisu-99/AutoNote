@@ -189,43 +189,92 @@ btnFullGraph.addEventListener('click', () => {
 
 // 그래프 배경/노드 우클릭 시 뜨는 작은 플로팅 메뉴 (개념/엔티티 생성 2개, 또는 삭제
 // 1개). 화면 좌표(clientX/Y) 기준 position:fixed라 그래프 확대/축소·팬과 무관하게
-// 클릭한 자리 그대로 뜬다.
-let _activeContextMenu = null;
+// 클릭한 자리 그대로 뜬다. 항목에 onClick 대신 items(하위 항목 배열)를 주면
+// 클릭 시 실행하지 않고 옆에 서브메뉴를 펼친다(papers.js의 "Brain으로 이동"
+// 처럼 옵션이 많아 최상위 메뉴를 다 채우면 번잡한 경우용) - 몇 단계든 중첩
+// 가능하지만 지금은 1단계만 쓴다.
+let _activeContextMenus = []; // [루트 메뉴, 열려 있는 서브메뉴, 그 서브메뉴의 서브메뉴, ...] 순서
 function closeContextMenu() {
-  _activeContextMenu?.remove();
-  _activeContextMenu = null;
-  document.removeEventListener('click', closeContextMenu, true);
+  for (const el of _activeContextMenus) el.remove();
+  _activeContextMenus = [];
+  document.removeEventListener('click', _onOutsideContextMenuClick, true);
   document.removeEventListener('keydown', _onContextMenuEscape, true);
 }
 function _onContextMenuEscape(event) {
   if (event.key === 'Escape') closeContextMenu();
 }
+// 메뉴(또는 그 서브메뉴) 내부 클릭은 무시하고, 그 바깥을 클릭했을 때만 전체를
+// 닫는다 - 서브메뉴를 펼치는 클릭까지 "메뉴 바깥 클릭"으로 오인해 곧장 닫아
+// 버리면 서브메뉴가 뜨자마자 사라지므로, 클릭이 메뉴 트리 안인지 먼저 확인한다.
+function _onOutsideContextMenuClick(event) {
+  if (_activeContextMenus.some((el) => el.contains(event.target))) return;
+  closeContextMenu();
+}
 function showContextMenu(clientX, clientY, items) {
   closeContextMenu();
-  const menu = document.createElement('div');
-  menu.className = 'graph-context-menu';
-  menu.style.left = `${clientX}px`;
-  menu.style.top = `${clientY}px`;
-  items.forEach((item) => {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'graph-context-menu-item';
-    btn.textContent = item.label;
-    btn.addEventListener('click', (event) => {
-      event.stopPropagation();
-      closeContextMenu();
-      item.onClick();
-    });
-    menu.appendChild(btn);
-  });
+  const menu = _buildContextMenuEl(items, clientX, clientY);
   document.body.appendChild(menu);
-  _activeContextMenu = menu;
+  _activeContextMenus.push(menu);
   // 이번 우클릭 이벤트 자체가 지금 document에 새로 등록하는 리스너까지 곧장
   // 버블링해 메뉴를 열자마자 닫아버리지 않도록, 다음 tick에 등록한다.
   setTimeout(() => {
-    document.addEventListener('click', closeContextMenu, true);
+    document.addEventListener('click', _onOutsideContextMenuClick, true);
     document.addEventListener('keydown', _onContextMenuEscape, true);
   }, 0);
+}
+function _buildContextMenuEl(items, x, y) {
+  const menu = document.createElement('div');
+  menu.className = 'graph-context-menu';
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+  let openSubmenuBtn = null;
+  items.forEach((item) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'graph-context-menu-item' + (item.items ? ' has-submenu' : '');
+    if (item.items) {
+      // 라벨과 화살표를 별도 span으로 나눠야 CSS의 justify-content:
+      // space-between이 실제로 둘을 양끝으로 벌려준다(한 텍스트 노드로는
+      // 안 먹음).
+      btn.innerHTML = `<span></span><span class="submenu-arrow">▸</span>`;
+      btn.firstChild.textContent = item.label;
+    } else {
+      btn.textContent = item.label;
+    }
+    btn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      if (!item.items) {
+        closeContextMenu();
+        item.onClick();
+        return;
+      }
+      // 서브메뉴 토글 - 같은 버튼을 다시 누르면 닫고, 다른 버튼을 누르면 이
+      // 메뉴(menu) 자신은 그대로 둔 채 그 아래(서브메뉴, 서브메뉴의 서브메뉴 …)
+      // 만 지운 뒤 새로 연다.
+      const idx = _activeContextMenus.indexOf(menu);
+      const removed = idx === -1 ? [] : _activeContextMenus.splice(idx + 1);
+      for (const el of removed) el.remove();
+      if (openSubmenuBtn === btn) {
+        openSubmenuBtn = null;
+        return;
+      }
+      const rect = btn.getBoundingClientRect();
+      const submenu = _buildContextMenuEl(item.items, rect.right + 2, rect.top);
+      document.body.appendChild(submenu);
+      // 화면 오른쪽/아래로 넘치면 반대쪽으로 뒤집는다.
+      const submenuRect = submenu.getBoundingClientRect();
+      if (submenuRect.right > window.innerWidth) {
+        submenu.style.left = `${rect.left - submenuRect.width - 2}px`;
+      }
+      if (submenuRect.bottom > window.innerHeight) {
+        submenu.style.top = `${Math.max(4, window.innerHeight - submenuRect.height - 8)}px`;
+      }
+      _activeContextMenus.push(submenu);
+      openSubmenuBtn = btn;
+    });
+    menu.appendChild(btn);
+  });
+  return menu;
 }
 
 // orphan 노드 생성 패널/자동연결 생성 패널처럼 클릭 좌표에 떠야 하는(트리거 버튼
