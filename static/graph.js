@@ -418,6 +418,17 @@ async function loadGraph(focusSlugs, onlyFocus = false) {
     return;
   }
 
+  // 상단바 통계(index.html) - 논문 토글로 필터링된 focus 그래프 말고, 전체
+  // 그래프를 불러온 시점(!onlyFocus)에만 갱신한다. 그래야 "몇 개 켰을 때"의
+  // 부분 개수가 아니라 Brain 전체의 실제 개념/용어 노드 수를 보여준다.
+  if (!onlyFocus) {
+    const statNodesEl = document.getElementById('statNodes');
+    if (statNodesEl) {
+      const nodeCount = data.nodes.filter((n) => n.type === 'concept' || n.type === 'entity').length;
+      statNodesEl.textContent = `노드 ${nodeCount}개`;
+    }
+  }
+
   if (onlyFocus && currentFocusSlugs.length) {
     const labels = currentFocusSlugs.map((slug) => {
       const node = data.nodes.find((n) => n.id === slug);

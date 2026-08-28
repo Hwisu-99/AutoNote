@@ -71,6 +71,10 @@ async function loadPaperList() {
   papersCache = data.papers || [];
   await loadFolders();
   renderPaperList();
+  // 상단바 통계(index.html) - 실제 저장된 논문 수를 그대로 보여준다(가짜
+  // 숫자가 아니라 지금 이 목록의 길이 그대로).
+  const statPapersEl = document.getElementById('statPapers');
+  if (statPapersEl) statPapersEl.textContent = `논문 ${papersCache.length}개`;
 }
 
 function folderMemberPapers(folder) {
@@ -315,6 +319,7 @@ async function loadGraphSummaryCard(slug) {
 
   graphSummaryEl.innerHTML = `
     <div class="card result">
+      <div class="card-status"><span class="status-dot"></span>완료</div>
       <strong>${data.title}</strong>
       <p>${data.tldr ?? data.one_line_summary ?? ''}</p>
       <div class="meta-row"><span>API 비용</span><code>$${data.api_cost_usd.toFixed(4)}</code></div>

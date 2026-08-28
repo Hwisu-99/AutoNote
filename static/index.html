@@ -17,8 +17,18 @@
     --accent-soft: #FBE9E1;
     --error: #C0442F;
     --error-soft: #FCEBE7;
-    --radius: 14px;
-    --shadow: 0 1px 2px rgba(20,20,19,.04), 0 8px 24px rgba(20,20,19,.06);
+    --radius: 10px;
+    --radius-sm: 6px;
+    --shadow: 0 1px 2px rgba(20,20,19,.04), 0 6px 16px rgba(20,20,19,.05);
+
+    /* 타이포그래피 스케일 - 이전엔 .7rem~2.1rem 사이 12개 넘는 임의값이 흩어져
+       있었다. 용도별로 6단계만 두고 전부 이 변수를 통해서만 쓴다. */
+    --fs-xs: .72rem;    /* 폴더 토글 화살표, 극소 라벨, eyebrow */
+    --fs-sm: .8rem;     /* 메타 정보, 보조 텍스트 */
+    --fs-base: .85rem;  /* 본문 기본값(리스트 행, 버튼) */
+    --fs-md: .92rem;    /* 강조 본문(카드 안내문, 드롭존 안내) */
+    --fs-lg: 1.05rem;   /* 카드 제목 */
+    --fs-xl: 1.3rem;    /* 페이지 헤딩(h1) */
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -37,77 +47,97 @@
   }
 
   * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
   body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Pretendard", sans-serif;
     background: var(--bg);
     color: var(--text);
     margin: 0;
     min-height: 100vh;
-    display: flex;
-    justify-content: center;
-    padding: 64px 20px;
     transition: background .2s ease, color .2s ease;
   }
+  /* 대시보드형 상단바 - 화면 폭 전체에 걸쳐 고정된 앱 셸을 준다. 안의 내용은
+     .page와 같은 1720px 폭으로 가운데 정렬해 아래 레이아웃과 좌우가 맞는다. */
+  .topnav {
+    width: 100%; height: 56px; box-sizing: border-box;
+    display: flex; align-items: center; justify-content: center;
+    border-bottom: 1px solid var(--border); background: var(--surface);
+  }
+  .topnav-inner { width: 100%; max-width: 1720px; padding: 0 40px; display: flex; align-items: center; gap: 10px; }
+  /* 배지(뱃지 배경/테두리) 없이, 원래 아이콘 자리에 있던 인라인 SVG와 같은
+     방식으로 둔다 - 투명 배경 PNG를 자연 비율 그대로, 높이만 텍스트 줄과
+     맞춰서. */
+  .brand-mark { height: 22px; width: auto; flex-shrink: 0; }
+  .brand-name { font-size: var(--fs-base); font-weight: 700; color: var(--text); letter-spacing: -.005em; }
+  /* 실제로 존재하지 않는 메뉴(그래프/설정 등)를 링크로 늘어놓는 대신, 지금
+     Brain에 뭐가 얼마나 쌓여 있는지(실측치)를 상시 보여주는 상태 표시줄로
+     쓴다 - papers.js/graph.js가 각각 채운다. */
+  .topnav-stats { margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: var(--fs-sm); color: var(--text-muted); font-weight: 600; }
+  .topnav-stats .sep { opacity: .5; }
+
+  .page { display: flex; flex-direction: column; align-items: center; padding: 24px 20px 64px; }
+
   main { width: 100%; max-width: 640px; }
+  .eyebrow {
+    font-size: var(--fs-xs); font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--text-muted); margin-bottom: 8px;
+  }
 
   #paperListPanel {
     flex: 0 0 300px; height: 620px;
     background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
-    box-shadow: var(--shadow); padding: 16px; display: flex; flex-direction: column;
-    position: sticky; top: 64px; overflow: hidden;
+    box-shadow: var(--shadow); padding: 20px; display: flex; flex-direction: column;
+    position: sticky; top: 80px; overflow: hidden;
   }
-  .panel-title { font-weight: 600; font-size: .9rem; color: var(--text-muted); margin-bottom: 10px; }
-  .panel-title-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+  .panel-title { font-weight: 700; font-size: var(--fs-xs); letter-spacing: .06em; text-transform: uppercase; color: var(--text-muted); margin-bottom: 12px; }
+  .panel-title-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    margin: -20px -20px 12px; padding: 12px 14px; border-bottom: 1px solid var(--border);
+  }
   .panel-title-row .panel-title { margin-bottom: 0; }
-  .panel-icon-btn {
+  /* 아이콘 버튼 3종(패널 헤더의 새 폴더, 논문/폴더 행의 그래프 토글·삭제)은
+     크기·모양이 완전히 같은 하나의 컴포넌트였는데 각자 따로 정의돼 있었다 -
+     여기서 베이스를 하나로 합치고, 호버 시 의미에 따라 갈리는 색(중립=accent,
+     파괴적 동작=error)만 개별로 얹는다. */
+  .panel-icon-btn, .paper-graph-btn, .paper-delete-btn {
     flex-shrink: 0; width: 26px; height: 26px; display: flex; align-items: center; justify-content: center;
-    background: none; border: none; border-radius: 6px; color: var(--text-muted); cursor: pointer;
+    background: none; border: none; border-radius: var(--radius-sm); color: var(--text-muted); cursor: pointer;
     transition: background .15s ease, color .15s ease;
   }
-  .panel-icon-btn:hover { background: var(--accent-soft); color: var(--accent); }
-  #paperList { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+  .panel-icon-btn:hover, .paper-graph-btn:hover { background: var(--accent-soft); color: var(--accent); }
+  .paper-graph-btn.active { background: var(--accent); color: var(--surface); }
+  .paper-graph-btn.active:hover { background: var(--accent-hover, var(--accent)); }
+  .paper-delete-btn:hover { background: var(--error-soft); color: var(--error); }
+  #paperList { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; }
   .paper-row {
-    display: flex; align-items: center; gap: 6px; border-radius: 8px;
-    padding: 2px; transition: background .15s ease; cursor: grab;
+    display: flex; align-items: center; gap: 6px; border-left: 2px solid transparent;
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    padding: 2px; transition: background .15s ease, border-color .15s ease; cursor: grab;
   }
-  .paper-row.selected { background: var(--accent-soft); }
+  .paper-row.selected { background: var(--bg); border-left-color: var(--accent); }
   .paper-row.dragging { opacity: .4; }
   .paper-title {
-    flex: 1; text-align: left; font-size: .85rem; color: var(--text);
+    flex: 1; text-align: left; font-size: var(--fs-base); color: var(--text);
     line-height: 1.35; padding: 6px 8px;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .paper-row.selected .paper-title { color: var(--accent); font-weight: 600; }
-  .paper-graph-btn {
-    flex-shrink: 0; width: 26px; height: 26px; display: flex; align-items: center; justify-content: center;
-    background: none; border: none; border-radius: 6px; color: var(--text-muted); cursor: pointer;
-    transition: background .15s ease, color .15s ease;
-  }
-  .paper-graph-btn:hover { background: var(--accent-soft); color: var(--accent); }
-  .paper-graph-btn.active { background: var(--accent); color: var(--surface); }
-  .paper-graph-btn.active:hover { background: var(--accent-hover, var(--accent)); }
-  .paper-delete-btn {
-    flex-shrink: 0; width: 26px; height: 26px; display: flex; align-items: center; justify-content: center;
-    background: none; border: none; border-radius: 6px; color: var(--text-muted); cursor: pointer;
-    transition: background .15s ease, color .15s ease;
-  }
-  .paper-delete-btn:hover { background: var(--error-soft); color: var(--error); }
-  .paper-empty { font-size: .82rem; color: var(--text-muted); padding: 8px 10px; }
+  .paper-empty { font-size: var(--fs-sm); color: var(--text-muted); padding: 8px 10px; }
 
   /* 옵시디언 파일 탐색기처럼 폴더로 논문을 묶어 보여주는 영역. 실제 vault 파일
      위치는 안 바뀌고(가상 폴더), 어느 논문이 어느 폴더에 속하는지만 로컬에
      기록된다(paper_notes/paper_folders.py). 논문 행을 폴더 위로 드래그해서
      넣고 빼므로(papers.js), 드래그 중인 폴더는 drag-over 클래스로 강조한다. */
-  .folder-block { display: flex; flex-direction: column; gap: 2px; margin-bottom: 4px; border-radius: 8px; }
+  .folder-block { display: flex; flex-direction: column; gap: 2px; margin-bottom: 4px; border-radius: var(--radius-sm); }
   .folder-block.drag-over { background: var(--accent-soft); }
-  .folder-header { display: flex; align-items: center; gap: 2px; border-radius: 8px; padding: 2px; }
+  .folder-header { display: flex; align-items: center; gap: 2px; border-radius: var(--radius-sm); padding: 2px; }
   .folder-toggle-btn {
     flex-shrink: 0; width: 18px; height: 26px; display: flex; align-items: center; justify-content: center;
-    background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: .7rem; padding: 0;
+    background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: var(--fs-xs); padding: 0;
   }
   .folder-icon { flex-shrink: 0; display: flex; align-items: center; color: var(--text-muted); }
   .folder-name {
-    flex: 1; text-align: left; font-size: .85rem; font-weight: 600; color: var(--text);
+    flex: 1; text-align: left; font-size: var(--fs-base); font-weight: 600; color: var(--text);
     padding: 6px 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .folder-body { display: flex; flex-direction: column; gap: 2px; margin-left: 20px; }
@@ -115,28 +145,21 @@
      임시 행 - 확인 버튼 없이 Enter/포커스 아웃으로 바로 생성된다(papers.js). */
   .folder-ghost-row { display: flex; align-items: center; gap: 2px; padding: 2px; }
   .folder-name-input {
-    flex: 1; min-width: 0; font-size: .85rem; font-weight: 600; color: var(--text);
-    padding: 5px 6px; margin: 1px 0; border-radius: 6px;
+    flex: 1; min-width: 0; font-size: var(--fs-base); font-weight: 600; color: var(--text);
+    padding: 5px 6px; margin: 1px 0; border-radius: var(--radius-sm);
     border: 1px solid var(--accent); background: var(--surface); outline: none;
   }
 
-  .eyebrow {
-    display: flex; align-items: center; justify-content: center;
-    font-size: 2.1rem; font-weight: 800; letter-spacing: .04em;
-    color: var(--accent); text-transform: uppercase; margin-bottom: 24px;
-    text-align: center;
-  }
   h1 {
-    font-size: 1.65rem; font-weight: 650; letter-spacing: -.01em;
-    margin: 0 0 8px;
+    font-size: var(--fs-xl); font-weight: 700; letter-spacing: -.01em; color: var(--text);
+    margin: 0 0 24px; line-height: 1.4;
   }
-  .subtitle { color: var(--text-muted); font-size: .95rem; margin: 0 0 36px; line-height: 1.5; }
 
   #dropzone {
     background: var(--surface);
-    border: 1.5px dashed var(--border);
+    border: 1px dashed var(--border);
     border-radius: var(--radius);
-    padding: 56px 24px;
+    padding: 32px 20px;
     text-align: center;
     cursor: pointer;
     transition: border-color .18s ease, background .18s ease, transform .18s ease;
@@ -146,13 +169,13 @@
   #dropzone.drag { border-color: var(--accent); background: var(--accent-soft); }
 
   .dz-icon {
-    width: 44px; height: 44px; margin: 0 auto 16px;
-    border-radius: 12px; background: var(--accent-soft);
+    width: 36px; height: 36px; margin: 0 auto 12px;
+    border-radius: var(--radius-sm); background: var(--bg);
     display: flex; align-items: center; justify-content: center;
     color: var(--accent);
   }
-  .dz-title { font-weight: 600; font-size: 1rem; margin-bottom: 4px; }
-  .dz-hint { color: var(--text-muted); font-size: .85rem; }
+  .dz-title { font-weight: 600; font-size: var(--fs-md); margin-bottom: 4px; }
+  .dz-hint { color: var(--text-muted); font-size: var(--fs-sm); }
   input[type=file] { display: none; }
 
   #progressWrap { margin-top: 28px; display: none; }
@@ -170,7 +193,7 @@
   }
   .progress-status {
     display: flex; align-items: center; gap: 8px;
-    color: var(--text-muted); font-size: .88rem;
+    color: var(--text-muted); font-size: var(--fs-sm);
   }
   .spinner {
     width: 13px; height: 13px; border-radius: 50%;
@@ -179,40 +202,65 @@
   }
   @keyframes spin { to { transform: rotate(360deg); } }
 
+  /* 그래프 뷰의 .graph-btn(graph.css)과 같은 "알약형" 버튼 컴포넌트 - 패딩/폰트/
+     radius를 그대로 맞춰서 페이지 어디서든 같은 버튼으로 보이게 한다. */
   #cancelBtn {
     background: none; border: 1px solid var(--border); border-radius: 999px;
-    color: var(--text-muted); font-size: .8rem; font-weight: 600;
-    padding: 4px 12px; cursor: pointer; flex-shrink: 0;
+    color: var(--text-muted); font-size: var(--fs-sm); font-weight: 600;
+    padding: 5px 14px; cursor: pointer; flex-shrink: 0;
     transition: border-color .15s ease, color .15s ease;
   }
   #cancelBtn:hover { border-color: var(--error); color: var(--error); }
 
-  #status { margin-top: 20px; }
+  #status { margin-top: 16px; }
+  /* 대시보드형은 왼쪽 색띠로 상태를 구분하는 좀 더 전통적인 방식을 쓴다(카드
+     맨 위 상태 라벨은 유지 - 색만으로는 색맹 사용자에게 안 보이므로 텍스트도
+     같이 남긴다). */
   .card {
-    border-radius: var(--radius); padding: 20px 22px;
+    background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--accent);
+    border-radius: var(--radius); padding: 16px 18px;
     box-shadow: var(--shadow); animation: rise .25s ease;
   }
   @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
-  .result { background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--accent); }
-  .error { background: var(--error-soft); border-left: 3px solid var(--error); color: var(--error); }
-  .cancelled { background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--text-muted); color: var(--text-muted); }
+  .card-status {
+    display: flex; align-items: center; gap: 6px;
+    font-size: var(--fs-xs); font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+  .card-status .status-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+  .result .card-status { color: var(--accent); }
+  .error { background: var(--error-soft); border-color: var(--error-soft); border-left-color: var(--error); color: var(--error); }
+  .cancelled { border-left-color: var(--text-muted); color: var(--text-muted); }
+  .cancelled .card-status { color: var(--text-muted); }
 
-  .result strong { font-size: 1.05rem; display: block; margin-bottom: 6px; }
+  .result strong { font-size: var(--fs-lg); display: block; margin-bottom: 6px; }
   .result p { margin: 0 0 14px; color: var(--text-muted); line-height: 1.55; }
   .meta-row {
     display: flex; justify-content: space-between; gap: 12px;
-    font-size: .82rem; padding: 8px 0; border-top: 1px solid var(--border);
+    font-size: var(--fs-sm); padding: 8px 0; border-top: 1px solid var(--border);
     color: var(--text-muted);
   }
   .meta-row span:first-child { flex-shrink: 0; }
   code {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: .8rem; color: var(--text); text-align: right;
+    font-size: var(--fs-sm); color: var(--text); text-align: right;
     overflow-wrap: anywhere;
   }
 </style>
 </head>
 <body>
+<header class="topnav">
+  <div class="topnav-inner">
+    <img class="brand-mark" src="/brand-mark.png" alt="" aria-hidden="true">
+    <span class="brand-name">BrainGraph</span>
+    <div class="topnav-stats">
+      <span id="statPapers">-</span>
+      <span class="sep">·</span>
+      <span id="statNodes">-</span>
+    </div>
+  </div>
+</header>
+<div class="page">
 <div class="layout">
 <aside id="paperListPanel">
   <div class="panel-title-row">
@@ -228,8 +276,8 @@
   <div id="paperList"></div>
 </aside>
 <main>
-  <div class="eyebrow">AutoNote</div>
-  <p class="subtitle">PDF를 올리면 Claude가 읽고 구조화된 요약 노트를 만들어 vault에 저장합니다.</p>
+  <div class="eyebrow">새 논문</div>
+  <h1>PDF를 올리면 Claude가 읽고 구조화된 요약 노트를 만들어 vault에 저장합니다.</h1>
 
   <div id="dropzone">
     <div class="dz-icon">
@@ -301,6 +349,7 @@
 <div id="graphSummary"></div>
 </div>
 </div>
+</div>
 
 <script src="https://d3js.org/d3.v7.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
@@ -368,7 +417,7 @@ function setProgress(percent, message, done = false) {
 async function handleFile(file) {
   statusEl.innerHTML = '';
   if (!file.name.toLowerCase().endsWith('.pdf')) {
-    statusEl.innerHTML = '<div class="card error">PDF 파일만 지원합니다.</div>';
+    statusEl.innerHTML = '<div class="card error"><div class="card-status"><span class="status-dot"></span>오류</div>PDF 파일만 지원합니다.</div>';
     return;
   }
 
@@ -404,7 +453,7 @@ async function handleFile(file) {
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       progressWrap.style.display = 'none';
-      statusEl.innerHTML = `<div class="card error">오류: ${data.detail || res.statusText}</div>`;
+      statusEl.innerHTML = `<div class="card error"><div class="card-status"><span class="status-dot"></span>오류</div>${data.detail || res.statusText}</div>`;
       return;
     }
 
@@ -426,13 +475,14 @@ async function handleFile(file) {
         const evt = JSON.parse(line);
         if (evt.stage === 'error') {
           progressWrap.style.display = 'none';
-          statusEl.innerHTML = `<div class="card error">${evt.message}</div>`;
+          statusEl.innerHTML = `<div class="card error"><div class="card-status"><span class="status-dot"></span>오류</div>${evt.message}</div>`;
           return;
         }
         if (evt.stage === 'done') {
           setProgress(100, evt.message, true);
           statusEl.innerHTML = `
             <div class="card result">
+              <div class="card-status"><span class="status-dot"></span>완료</div>
               <strong>${evt.title}</strong>
               <p>${evt.tldr}</p>
               <div class="meta-row"><span>노트</span><code>${evt.note_path}</code></div>
@@ -453,7 +503,7 @@ async function handleFile(file) {
     if (err.name === 'AbortError') {
       statusEl.innerHTML = '<div class="card cancelled">취소되었습니다.</div>';
     } else {
-      statusEl.innerHTML = `<div class="card error">요청 실패: ${err}</div>`;
+      statusEl.innerHTML = `<div class="card error"><div class="card-status"><span class="status-dot"></span>오류</div>요청 실패: ${err}</div>`;
     }
   } finally {
     abortController = null;
