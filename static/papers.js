@@ -218,16 +218,32 @@ function buildBrainBlock(id, brain) {
   icon.alt = '';
 
   // 폴더는 그 안 논문 개수만큼, loose 논문은 1개씩 - 폴더를 1개로 세면
-  // 안에 몇 편이 들었는지 안 보여서 논문 수 기준으로 더한다.
-  const paperCount = folders.reduce((sum, f) => sum + folderMemberPapers(f).length, 0) + loosePapers.length;
+  // 안에 몇 편이 들었는지 안 보여서 논문 수 기준으로 더한다. 같은 목록을
+  // 그래프 토글 버튼의 on/off 판정(isFolderActive)에도 그대로 쓴다.
+  const members = folders.flatMap((f) => folderMemberPapers(f)).concat(loosePapers);
   const nameEl = document.createElement('span');
   nameEl.className = 'folder-name';
-  nameEl.textContent = `${label} (${paperCount})`;
+  nameEl.textContent = `${label} (${members.length})`;
   nameEl.title = label;
 
   header.appendChild(toggleBtn);
   header.appendChild(icon);
   header.appendChild(nameEl);
+
+  // 이 Brain(브레인 없음 포함) 소속 논문 전체를 한 번에 그래프에 켜고/끄는
+  // 버튼 - 폴더 헤더의 그래프 버튼(toggleFolderGraph)과 같은 패턴, 범위만
+  // 폴더 하나가 아니라 이 Brain 전체(폴더를 통한 소속 + loose 논문 전부)다.
+  const active = isFolderActive(members);
+  const graphBtn = document.createElement('button');
+  graphBtn.type = 'button';
+  graphBtn.className = 'paper-graph-btn' + (active ? ' active' : '');
+  graphBtn.title = active ? `${label} 그래프에서 끄기` : `${label} 그래프에 켜기`;
+  graphBtn.innerHTML = GRAPH_ICON_SVG;
+  graphBtn.addEventListener('click', (event) => {
+    event.stopPropagation();
+    toggleBrainGraph(id);
+  });
+  header.appendChild(graphBtn);
 
   if (brain) {
     // 더블클릭으로 이름 바꾸기 - 옵시디언 파일/폴더 이름 바꾸기와 같은 제스처.
@@ -790,6 +806,23 @@ function togglePaperGraph(slug) {
 
 function toggleFolderGraph(folder) {
   const members = folderMemberPapers(folder);
+  if (members.length === 0) return;
+  const active = isFolderActive(members);
+  if (active) {
+    for (const p of members) selectedPaperSlugs.delete(p.slug);
+  } else {
+    for (const p of members) selectedPaperSlugs.add(p.slug);
+  }
+  renderPaperList();
+  loadGraph([...selectedPaperSlugs], selectedPaperSlugs.size > 0);
+}
+
+// toggleFolderGraph와 같은 패턴이지만 범위가 폴더 하나가 아니라 Brain
+// 전체(그 Brain 소속 폴더들의 논문 + loose 논문 전부, 'none'이면 브레인
+// 없음 전체) - buildBrainBlock의 그래프 버튼이 호출한다.
+function toggleBrainGraph(id) {
+  const { folders, loosePapers } = papersAndFoldersOfBrain(id);
+  const members = folders.flatMap((f) => folderMemberPapers(f)).concat(loosePapers);
   if (members.length === 0) return;
   const active = isFolderActive(members);
   if (active) {
