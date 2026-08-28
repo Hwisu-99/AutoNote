@@ -83,11 +83,19 @@
     color: var(--text-muted); margin-bottom: 8px;
   }
 
+  /* flex: 0 0 300px만으로는 폭이 고정되지 않는다 - width가 auto(비확정)면
+     flex item의 "자동 최소 크기"가 안의 긴 논문 제목 같은 content-based
+     minimum으로 정해져서, 그게 300px보다 크면 flex-shrink:0이어도 그
+     최소 크기까지 넓어진다(overflow:hidden으로 이 자동 최소값을 0으로
+     만드는 게 보통의 해법이지만, 그러면 sticky가 깨진다 - 크롬에서도
+     이 조합에서 재현 확인됨). 그래서 width를 명시적으로도 박아 "확정된
+     크기"로 만든다 - 그러면 자동 최소 크기 계산이 min(content-based, 300)
+     = 300으로 정리된다. */
   #paperListPanel {
-    flex: 0 0 300px; height: 620px;
+    flex: 0 0 300px; width: 300px; height: 620px;
     background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
     box-shadow: var(--shadow); padding: 20px; display: flex; flex-direction: column;
-    position: sticky; top: 80px; overflow: hidden;
+    position: sticky; top: 80px;
   }
   .panel-title { font-weight: 700; font-size: var(--fs-xs); letter-spacing: .06em; text-transform: uppercase; color: var(--text-muted); margin-bottom: 12px; }
   .panel-title-row {
@@ -108,10 +116,16 @@
   .paper-graph-btn.active { background: var(--accent); color: var(--surface); }
   .paper-graph-btn.active:hover { background: var(--accent-hover, var(--accent)); }
   .paper-delete-btn:hover { background: var(--error-soft); color: var(--error); }
-  #paperList { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; }
+  #paperList { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  /* min-width: 0 - #paperList가 flex-column이라 .paper-row/.folder-block도 그
+     안의 flex item이다. 기본값 min-width:auto인 flex item은 안의 긴 논문
+     제목(.paper-title에 이미 overflow:hidden+ellipsis가 있어도) 때문에 패널
+     전체가 옆으로 넓어지는 문제가 있었다 - 사이드바 패널 자체(#paperListPanel)의
+     overflow는 sticky를 깨뜨리므로(WebKit 버그) 건드리지 않고, 실제 텍스트를
+     감싸는 이 안쪽 flex item에서 폭을 끊어야 한다. */
   .paper-row {
     display: flex; align-items: center; gap: 6px; border-left: 2px solid transparent;
-    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0; min-width: 0;
     padding: 2px; transition: background .15s ease, border-color .15s ease; cursor: grab;
   }
   .paper-row.selected { background: var(--bg); border-left-color: var(--accent); }
@@ -128,9 +142,9 @@
      위치는 안 바뀌고(가상 폴더), 어느 논문이 어느 폴더에 속하는지만 로컬에
      기록된다(paper_notes/paper_folders.py). 논문 행을 폴더 위로 드래그해서
      넣고 빼므로(papers.js), 드래그 중인 폴더는 drag-over 클래스로 강조한다. */
-  .folder-block { display: flex; flex-direction: column; gap: 2px; margin-bottom: 4px; border-radius: var(--radius-sm); }
+  .folder-block { display: flex; flex-direction: column; gap: 2px; margin-bottom: 4px; border-radius: var(--radius-sm); min-width: 0; }
   .folder-block.drag-over { background: var(--accent-soft); }
-  .folder-header { display: flex; align-items: center; gap: 2px; border-radius: var(--radius-sm); padding: 2px; }
+  .folder-header { display: flex; align-items: center; gap: 2px; border-radius: var(--radius-sm); padding: 2px; min-width: 0; }
   .folder-toggle-btn {
     flex-shrink: 0; width: 18px; height: 26px; display: flex; align-items: center; justify-content: center;
     background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: var(--fs-xs); padding: 0;
@@ -140,7 +154,7 @@
     flex: 1; text-align: left; font-size: var(--fs-base); font-weight: 600; color: var(--text);
     padding: 6px 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  .folder-body { display: flex; flex-direction: column; gap: 2px; margin-left: 20px; }
+  .folder-body { display: flex; flex-direction: column; gap: 2px; margin-left: 20px; min-width: 0; }
   /* "+ 폴더" 클릭 시 옵시디언처럼 목록 맨 위에 바로 이름 입력 상태로 나타나는
      임시 행 - 확인 버튼 없이 Enter/포커스 아웃으로 바로 생성된다(papers.js). */
   .folder-ghost-row { display: flex; align-items: center; gap: 2px; padding: 2px; }
@@ -277,7 +291,7 @@
 </aside>
 <main>
   <div class="eyebrow">새 논문</div>
-  <h1>PDF를 올리면 Claude가 읽고 구조화된 요약 노트를 만들어 vault에 저장합니다.</h1>
+  <h1>논문을 올려 BrainGraph로 변환하기</h1>
 
   <div id="dropzone">
     <div class="dz-icon">
@@ -366,6 +380,7 @@
 </script>
 <script src="/graph.js"></script>
 <script src="/papers.js"></script>
+<script src="/inspector.js"></script>
 <script>
 const dropzone = document.getElementById('dropzone');
 const fileInput = document.getElementById('fileInput');
