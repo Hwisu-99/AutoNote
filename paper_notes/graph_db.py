@@ -21,7 +21,7 @@ import os
 import threading
 
 from paper_notes.embeddings import embed_passage, embed_query, embedding_dimension
-from paper_notes.node_store import NODE_STORE_ROOT, list_nodes
+from paper_notes.node_store import NODE_STORE_ROOT, get_user_section, list_nodes
 
 _driver = None
 _driver_lock = threading.Lock()
@@ -84,10 +84,15 @@ def ensure_schema() -> None:
                 dim=dim,
             )
 
+        # 필드 목록이 바뀔 때마다 IF NOT EXISTS만으로는 기존 인덱스가 새 정의로
+        # 안 바뀌므로, 매번 지우고 다시 만든다 - 인덱스일 뿐이라 재생성 비용이
+        # 크지 않고(Neo4j가 백그라운드로 다시 채움), 항상 지금 코드의 필드 목록과
+        # 실제 인덱스가 어긋나지 않게 보장하는 쪽을 택했다.
+        session.run("DROP INDEX node_fulltext IF EXISTS")
         session.run(
             """
             CREATE FULLTEXT INDEX node_fulltext IF NOT EXISTS
-            FOR (n:Concept|Entity) ON EACH [n.display_label, n.description, n.note]
+            FOR (n:Concept|Entity) ON EACH [n.display_label, n.description, n.note, n.user_notes]
             """
         )
 
@@ -131,6 +136,15 @@ def sync_node(node_type: str, slug: str) -> None:
         return
 
     embedding = embed_passage(_node_text(frontmatter))
+
+    # Neo4j 속성은 출처별로 셋으로 나눈다 - description/note는 frontmatter의 값을
+    # 그대로(둘 다 논문 요약 파이프라인이 채운 AI 생성 텍스트, resolve_or_create_node
+    # 참고 - 서로 합치지 않고 각자 자기 이름의 속성에만 들어간다), user_notes는
+    # node_store의 user-notes 섹션(사용자가 직접 쓴 원문, 또는 대화 중 add_note로
+    # 덧붙여진 내용)을 별도 속성으로 둔다. 세 속성 모두 섞이지 않아야 검색 결과를
+    # 읽는 쪽(Claude 등)이 어디서 나온 텍스트인지 헷갈리지 않는다.
+    user_notes = get_user_section(NODE_STORE_ROOT, node_type, slug)
+
     driver = get_driver()
     with driver.session() as session:
         session.run(
@@ -141,7 +155,8 @@ def sync_node(node_type: str, slug: str) -> None:
                 n.description = $description,
                 n.note = $note,
                 n.categories = $categories,
-                n.embedding = $embedding
+                n.embedding = $embedding,
+                n.user_notes = $user_notes
             """,
             slug=slug,
             display_label=frontmatter.get("display_label", slug),
@@ -150,6 +165,7 @@ def sync_node(node_type: str, slug: str) -> None:
             note=frontmatter.get("note", ""),
             categories=frontmatter.get("categories") or [],
             embedding=embedding,
+            user_notes=user_notes,
         )
 
         # 이 노드로 들어오는 관계를 전부 지우고 현재 sources로 다시 만든다 -
