@@ -7,11 +7,12 @@ import json
 import os
 import re
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -29,6 +30,7 @@ from paper_notes.node_store import (
     delete_node,
     find_entities_by_concept,
     find_node_fuzzy,
+    find_node_slugs_by_paper,
     get_auto_section,
     get_user_section,
     link_node_to_paper,
@@ -44,8 +46,19 @@ from paper_notes.node_store import (
     unlink_concept_from_entity,
     update_user_section,
 )
+from paper_notes.brains import (
+    create_brain,
+    delete_brain,
+    get_paper_brain_id,
+    list_brains,
+    merge_brains,
+    rename_brain,
+    set_paper_brain,
+)
 from paper_notes.graph_db import Neo4jNotConfigured
 from paper_notes.graph_db import delete_node_from_graph as _gdb_delete_node
+from paper_notes.graph_db import retag_node_brain as _gdb_retag_node_brain
+from paper_notes.graph_db import retag_paper_brain as _gdb_retag_paper_brain
 from paper_notes.graph_db import search as graph_db_search
 from paper_notes.graph_db import sync_node as _gdb_sync_node
 from paper_notes.graph_db import sync_paper as _gdb_sync_paper
@@ -55,6 +68,7 @@ from paper_notes.paper_folders import (
     create_folder,
     delete_folder,
     list_folders,
+    set_folder_brain,
     set_paper_folder,
 )
 from paper_notes.supabase_writer import delete_note as delete_remote_note
@@ -98,6 +112,45 @@ def _sync_paper(slug: str, title: str, tags: list[str] | None = None) -> None:
         pass
     except Exception as exc:  # noqa: BLE001
         print(f"  [경고] Neo4j 논문 동기화 실패({slug}): {exc}")
+
+
+# Brain 재동기화(논문 1개당 최대 1 + N번의 Neo4j 왕복 - 노드 개수만큼)는 원격
+# Neo4j(Aura)라 왕복마다 네트워크 지연이 붙어서, 응답 안에서 기다리면 Folder
+# 배정(로컬 JSON만 씀)과 다르게 몇백 ms~1초 넘게 걸릴 수 있다. 그래서 아래
+# Brain 엔드포인트들은 이 함수를 FastAPI BackgroundTasks로 돌린다 - HTTP
+# 응답은 로컬 변경(진짜 저장소)이 끝나는 즉시 나가고, Neo4j 태깅은 응답을
+# 보낸 뒤 이어서 실행된다. 그 대신 실패해도 더 이상 HTTP 에러로 알릴 방법이
+# 없으므로(응답이 이미 나갔음), 마지막 실패 하나를 여기 기억해뒀다가
+# /api/neo4j-sync-status로 조회할 수 있게 한다 - papers.js가 Brain 배정
+# 액션 직후 잠깐 뒤에 이걸 확인해서 사용자에게 보여준다(조용히 삼키던 이전
+# 방식과 다르게, 실패를 실제로 드러낸다).
+_last_brain_sync_error: dict | None = None
+
+
+def _resync_paper_brain(paper_slug: str) -> None:
+    """paper_slug의 Folder/Brain 소속이 바뀐 뒤, Neo4j의 Paper.brain_id와 그
+    논문이 걸린 모든 concept/entity의 brain_ids를 다시 계산해 반영한다. 논문
+    내용(title/tags)도, 그 concept/entity들의 설명·별칭·sources[]도 전혀 안
+    바뀌었으므로(오직 "어느 Brain 소속인가"만 바뀜) 무거운 sync_paper()/
+    sync_node()(임베딩 재계산 + 관계 전체 재생성) 대신 각각의 가벼운 버전인
+    retag_paper_brain()/retag_node_brain()만 쓴다 - Brain 배정을 옮길 때마다
+    체감 지연이 컸던 지점이라, 실제로 바뀐 속성(brain_id/brain_ids) 하나만
+    SET하는 경로로 분리했다. 영향받는 concept/entity는
+    node_store.find_node_slugs_by_paper()로 찾는다.
+
+    항상 백그라운드 작업으로 스케줄돼서(호출부의 BackgroundTasks.add_task 참고)
+    HTTP 응답이 이미 나간 뒤에 실행된다."""
+    global _last_brain_sync_error
+    try:
+        _gdb_retag_paper_brain(paper_slug)
+        for node_type, node_slug in find_node_slugs_by_paper(NODE_STORE_ROOT, paper_slug):
+            _gdb_retag_node_brain(node_type, node_slug)
+    except Neo4jNotConfigured:
+        pass
+    except Exception as exc:  # noqa: BLE001
+        message = f"Neo4j Brain 재태깅 실패({paper_slug}): {exc}"
+        print(f"  [경고] {message}")
+        _last_brain_sync_error = {"message": message, "at": datetime.now(timezone.utc).isoformat()}
 
 
 def _delete_node_from_graph(node_type: str, slug: str) -> None:
@@ -426,12 +479,140 @@ async def put_paper_folder(slug: str, payload: _SetPaperFolderPayload):
     return {"slug": slug, "folder_id": payload.folder_id}
 
 
-@app.get("/api/graph-search")
-async def get_graph_search(q: str, top_k: int = 10):
-    """GraphRAG 하이브리드 검색(벡터+풀텍스트+그래프 확장, paper_notes/graph_db.py
-    참고) - MCP 서버의 search_graph 툴이 그대로 감싸서 쓴다."""
+class _CreateBrainPayload(BaseModel):
+    name: str
+
+
+class _RenameBrainPayload(BaseModel):
+    name: str
+
+
+class _SetFolderBrainPayload(BaseModel):
+    brain_id: str | None = None
+
+
+class _SetPaperBrainPayload(BaseModel):
+    brain_id: str | None = None
+
+
+def _resync_papers_in_folders(folder_ids: list[str]) -> None:
+    """folder_ids에 속한 모든 폴더의 논문들을 한 번에 재동기화한다 - Brain
+    삭제/병합처럼 폴더 단위로 Brain 소속이 바뀌는 경우, 그 폴더 안 논문 각각의
+    brain_id와 그 논문들이 걸린 concept/entity의 brain_ids까지 한 번에
+    다시 계산해 Neo4j에 반영해야 하므로. 이것 자체가 (여러 논문에 걸쳐)
+    백그라운드 작업 하나로 스케줄되고, 안에서는 그냥 순차적으로 돌린다 - 이미
+    요청/응답 밖이라 여기서 더 쪼갤 이유가 없다."""
+    if not folder_ids:
+        return
+    folder_id_set = set(folder_ids)
+    for folder in list_folders(NODE_STORE_ROOT):
+        if folder["id"] in folder_id_set:
+            for paper_slug in folder.get("paper_slugs", []):
+                _resync_paper_brain(paper_slug)
+
+
+@app.get("/api/neo4j-sync-status")
+async def get_neo4j_sync_status():
+    """가장 최근의 Brain 백그라운드 재동기화 실패(있다면)를 반환한다 - Brain
+    배정/삭제/병합은 이제 백그라운드로 도니 실패해도 그 요청의 HTTP 응답에는
+    실릴 수 없다(이미 나간 뒤라서). papers.js가 그 액션 직후 잠깐 뒤에 이걸
+    확인해서 사용자에게 보여준다. 성공하면 값이 안 바뀌므로, 프론트는 액션을
+    시작한 시각 이후의 에러인지(`at`)까지 같이 확인해야 오래된 실패를 다시
+    보여주지 않는다."""
+    return {"last_error": _last_brain_sync_error}
+
+
+@app.get("/api/brains")
+async def get_brains():
+    return {"brains": list_brains(NODE_STORE_ROOT)}
+
+
+@app.post("/api/brains")
+async def post_brain(payload: _CreateBrainPayload):
     try:
-        return {"results": graph_db_search(q, top_k)}
+        return create_brain(NODE_STORE_ROOT, payload.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.put("/api/brains/{brain_id}")
+async def put_brain(brain_id: str, payload: _RenameBrainPayload):
+    try:
+        return rename_brain(NODE_STORE_ROOT, brain_id, payload.name)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/brains/{brain_id}")
+async def delete_brain_endpoint(brain_id: str, background_tasks: BackgroundTasks):
+    """Brain 레코드만 지운다 - 안에 있던 Folder/논문은 "브레인 없음"으로
+    돌아갈 뿐 그대로 남는다. 영향받은 논문들의 Neo4j brain_id/brain_ids
+    재동기화는 응답을 막지 않는 백그라운드 작업으로 돌린다(로컬 삭제 자체는
+    이미 끝난 뒤라 응답을 더 기다리게 할 이유가 없다 - 위 _last_brain_sync_error
+    설명 참고)."""
+    try:
+        result = delete_brain(NODE_STORE_ROOT, brain_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    for paper_slug in result["direct_paper_slugs"]:
+        background_tasks.add_task(_resync_paper_brain, paper_slug)
+    background_tasks.add_task(_resync_papers_in_folders, result["affected_folder_ids"])
+    return {"deleted": brain_id, **result}
+
+
+@app.put("/api/paper-folders/{folder_id}/brain")
+async def put_paper_folder_brain(folder_id: str, payload: _SetFolderBrainPayload, background_tasks: BackgroundTasks):
+    """폴더 하나를 통째로 어느 Brain 소속으로 옮긴다 - 그 폴더 안 모든 논문이
+    간접적으로 그 Brain에 속하게 되므로, 폴더 안 논문 전체를 백그라운드로
+    재동기화한다."""
+    try:
+        folder = set_folder_brain(NODE_STORE_ROOT, folder_id, payload.brain_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    for paper_slug in folder.get("paper_slugs", []):
+        background_tasks.add_task(_resync_paper_brain, paper_slug)
+    return folder
+
+
+@app.put("/api/papers/{slug}/brain")
+async def put_paper_brain(slug: str, payload: _SetPaperBrainPayload, background_tasks: BackgroundTasks):
+    """논문 하나를 Folder를 거치지 않고 Brain에 직접 넣거나(brain_id 지정)
+    브레인 없음으로 되돌린다(brain_id=None)."""
+    try:
+        set_paper_brain(NODE_STORE_ROOT, slug, payload.brain_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    background_tasks.add_task(_resync_paper_brain, slug)
+    return {"slug": slug, "brain_id": payload.brain_id}
+
+
+@app.post("/api/brains/{loser_id}/merge-into/{survivor_id}")
+async def post_merge_brains(loser_id: str, survivor_id: str, background_tasks: BackgroundTasks):
+    """loser_id Brain을 survivor_id Brain으로 흡수한다(Brain Consolidation의
+    컨테이너 병합 단계 - concept/entity 수준 중복 정리는 별도로 기존
+    dedup.py/_merge_candidates.json 파이프라인을 쓴다)."""
+    try:
+        result = merge_brains(NODE_STORE_ROOT, survivor_id, loser_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    for paper_slug in result["moved_paper_slugs"]:
+        background_tasks.add_task(_resync_paper_brain, paper_slug)
+    background_tasks.add_task(_resync_papers_in_folders, result["moved_folder_ids"])
+    return result
+
+
+@app.get("/api/graph-search")
+async def get_graph_search(q: str, top_k: int = 10, brain_id: str | None = None):
+    """GraphRAG 하이브리드 검색(벡터+풀텍스트+그래프 확장, paper_notes/graph_db.py
+    참고) - MCP 서버의 search_graph 툴이 그대로 감싸서 쓴다. brain_id를 주면
+    그 Brain에 속한 Paper/Concept/Entity로만 결과를 좁힌다(graph_db.search()의
+    brain_id 필터 참고)."""
+    try:
+        return {"results": graph_db_search(q, top_k, brain_id)}
     except Neo4jNotConfigured as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 

@@ -52,6 +52,7 @@ def create_folder(store_root: str, name: str) -> dict:
         "id": uuid.uuid4().hex[:10],
         "name": name,
         "paper_slugs": [],
+        "brain_id": None,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     folders.append(folder)
@@ -67,6 +68,20 @@ def delete_folder(store_root: str, folder_id: str) -> None:
     if len(remaining) == len(folders):
         raise FileNotFoundError(f"폴더를 찾을 수 없습니다: {folder_id}")
     _save(store_root, remaining)
+
+
+def remove_paper_from_all_folders(store_root: str, paper_slug: str) -> None:
+    """paper_slug를 지금 속해 있는 모든 폴더에서 뺀다(있으면). set_paper_folder()와
+    brains.set_paper_brain()이 공유한다 - 논문을 Folder를 거치지 않고 Brain에
+    바로 넣을 때도 기존 폴더 소속은 정리돼야 하므로."""
+    folders = _load(store_root)
+    changed = False
+    for f in folders:
+        if paper_slug in f["paper_slugs"]:
+            f["paper_slugs"].remove(paper_slug)
+            changed = True
+    if changed:
+        _save(store_root, folders)
 
 
 def set_paper_folder(store_root: str, paper_slug: str, folder_id: str | None) -> None:
@@ -89,3 +104,33 @@ def set_paper_folder(store_root: str, paper_slug: str, folder_id: str | None) ->
         target["paper_slugs"].append(paper_slug)
 
     _save(store_root, folders)
+
+
+def set_folder_brain(store_root: str, folder_id: str, brain_id: str | None) -> dict:
+    """폴더 하나를 통째로 brain_id Brain 소속으로 바꾼다(그 폴더 안 논문들은
+    전부 그 Brain에 간접적으로 속하게 된다 - get_paper_brain_id() 참고).
+    brain_id=None이면 "브레인 없음" 상태로 되돌린다. Folder 자신은 여전히 최대
+    하나의 Brain에만 속한다(논문이 폴더 하나에만 속하는 것과 같은 불변식을
+    한 단계 위에서 그대로 반복)."""
+    folders = _load(store_root)
+    target = next((f for f in folders if f["id"] == folder_id), None)
+    if target is None:
+        raise FileNotFoundError(f"폴더를 찾을 수 없습니다: {folder_id}")
+    target["brain_id"] = brain_id
+    _save(store_root, folders)
+    return target
+
+
+def clear_brain_from_folders(store_root: str, brain_id: str) -> list[str]:
+    """brain_id를 가리키던 모든 폴더의 brain_id를 지운다(브레인 없음으로).
+    Brain이 삭제될 때 brains.delete_brain()이 호출한다 - 폴더 자체나 그 안의
+    논문은 그대로 두고 소속 표시만 정리한다. 영향받은 폴더 id 목록을 반환한다."""
+    folders = _load(store_root)
+    affected = [f["id"] for f in folders if f.get("brain_id") == brain_id]
+    if not affected:
+        return []
+    for f in folders:
+        if f.get("brain_id") == brain_id:
+            f["brain_id"] = None
+    _save(store_root, folders)
+    return affected

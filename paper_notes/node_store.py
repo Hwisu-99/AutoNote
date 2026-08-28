@@ -683,6 +683,25 @@ def remove_source(store_root: str, source_slug: str) -> list[tuple[str, str, boo
     return affected
 
 
+def find_node_slugs_by_paper(store_root: str, paper_slug: str) -> list[tuple[str, str]]:
+    """paper_slug를 sources[]에 담고 있는 모든 concept/entity를 (node_type, slug)로
+    나열한다. remove_source()와 같은 순회 방식이지만 읽기 전용이다 - 이 논문이
+    다른 Brain으로 옮겨졌을 때, brain_ids를 다시 계산해서 Neo4j에 반영해야 할
+    concept/entity가 어느 것들인지 app.py가 알아내는 용도(graph_db.sync_node를
+    다시 불러야 할 대상 목록)."""
+    found: list[tuple[str, str]] = []
+    for node_type, dir_name in _DIR_BY_TYPE.items():
+        folder = Path(store_root) / dir_name
+        if not folder.is_dir():
+            continue
+        for path in sorted(folder.glob("*.md")):
+            frontmatter = _read_frontmatter(path)
+            sources = frontmatter.get("sources") or []
+            if any(s.get("slug") == paper_slug for s in sources):
+                found.append((node_type, frontmatter["slug"]))
+    return found
+
+
 def find_entities_by_concept(store_root: str, concept_slug: str) -> list[dict]:
     """이 concept 밑에 걸린 entity 노드들을 찾는다 - entity 각각의 sources 항목
     중 concept_slug가 일치하는 게 하나라도 있으면 포함시킨다(entity는 논문마다

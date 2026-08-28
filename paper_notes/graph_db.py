@@ -21,6 +21,7 @@ import os
 import threading
 
 from paper_notes.embeddings import embed_passage, embed_query, embedding_dimension
+from paper_notes.brains import get_paper_brain_id
 from paper_notes.node_store import NODE_STORE_ROOT, get_user_section, list_nodes
 
 _driver = None
@@ -109,6 +110,22 @@ def _node_text(frontmatter: dict) -> str:
     return "\n".join(p for p in parts if p)
 
 
+def _node_brain_ids(frontmatter: dict) -> list[str]:
+    """이 노드가 걸려 있는 논문들이 지금 어느 Brain(들)에 속하는지 - concept/entity
+    자신은 Brain을 저장하지 않고(여러 Brain에 걸쳐 공유될 수 있으므로), 부를
+    때마다 sources[]의 각 논문이 지금 어느 Brain인지 다시 물어서 계산한다
+    (brains.get_paper_brain_id). search()가 이 brain_ids로 특정 Brain 범위의
+    결과만 걸러낸다. sync_node()와 retag_node_brain() 둘 다 이 계산이
+    필요해서 공용 함수로 뺐다."""
+    return sorted(
+        {
+            bid
+            for source in (frontmatter.get("sources") or [])
+            if (bid := get_paper_brain_id(NODE_STORE_ROOT, source.get("slug")))
+        }
+    )
+
+
 def sync_node(node_type: str, slug: str) -> None:
     """concept/entity 노드 하나를 node_store 상태 그대로 Neo4j에 반영한다.
     노드 속성(임베딩 포함)을 갱신하고, 이 노드로 들어오는 관계는 지금의 sources
@@ -144,6 +161,7 @@ def sync_node(node_type: str, slug: str) -> None:
     # 덧붙여진 내용)을 별도 속성으로 둔다. 세 속성 모두 섞이지 않아야 검색 결과를
     # 읽는 쪽(Claude 등)이 어디서 나온 텍스트인지 헷갈리지 않는다.
     user_notes = get_user_section(NODE_STORE_ROOT, node_type, slug)
+    brain_ids = _node_brain_ids(frontmatter)
 
     driver = get_driver()
     with driver.session() as session:
@@ -156,7 +174,8 @@ def sync_node(node_type: str, slug: str) -> None:
                 n.note = $note,
                 n.categories = $categories,
                 n.embedding = $embedding,
-                n.user_notes = $user_notes
+                n.user_notes = $user_notes,
+                n.brain_ids = $brain_ids
             """,
             slug=slug,
             display_label=frontmatter.get("display_label", slug),
@@ -166,6 +185,7 @@ def sync_node(node_type: str, slug: str) -> None:
             categories=frontmatter.get("categories") or [],
             embedding=embedding,
             user_notes=user_notes,
+            brain_ids=brain_ids,
         )
 
         # 이 노드로 들어오는 관계를 전부 지우고 현재 sources로 다시 만든다 -
@@ -208,15 +228,68 @@ def sync_node(node_type: str, slug: str) -> None:
                 )
 
 
-def sync_paper(slug: str, title: str, tags: list[str] | None = None) -> None:
+def retag_node_brain(node_type: str, slug: str) -> None:
+    """concept/entity 노드의 brain_ids만 다시 계산해 SET한다 - sync_node()
+    전체를 안 거치는 가벼운 경로. Folder/Brain 소속만 바뀌었을 뿐 노드의 실제
+    내용(설명/메모/별칭)이나 sources[] 자체는 안 바뀐 경우(app.py의
+    _resync_paper_brain 등)에만 써야 한다 - sync_node()가 매번 하는 임베딩
+    재계산(로컬 모델 forward pass)과 들어오는 관계 전체 삭제/재생성을 둘 다
+    생략하므로, 논문 하나에 노드가 여러 개 걸려 있을 때 체감 속도 차이가 크다.
+    sources[] 자체가 바뀌는 변경(연결 추가/해제, 새 논문에서 뽑힌 노드 등)은
+    여전히 sync_node()를 써야 관계도 같이 맞는다.
+
+    retag_paper_brain()과 같은 이유로 MERGE가 아니라 MATCH를 쓴다 - Neo4j에
+    이 노드가 아직 없다면(Neo4j 미설정 등) 속성 몇 개짜리 빈 노드를 새로
+    만들면 안 되므로, 있을 때만 갱신한다. 이미 삭제된 노드도 마찬가지로
+    조용히 아무 일도 안 한다(호출부가 어차피 node_store에 실제로 존재하는
+    노드만 찾아서 넘겨준다 - node_store.find_node_slugs_by_paper 참고)."""
+    label = _LABEL_BY_TYPE[node_type]
+    nodes = list_nodes(NODE_STORE_ROOT, node_type)
+    frontmatter = next((n for n in nodes if n["slug"] == slug), None)
+    if frontmatter is None:
+        return
+
+    brain_ids = _node_brain_ids(frontmatter)
     driver = get_driver()
     with driver.session() as session:
         session.run(
-            "MERGE (p:Paper {slug: $slug}) SET p.title = $title, p.tags = $tags",
+            f"MATCH (n:{label} {{slug: $slug}}) SET n.brain_ids = $brain_ids",
+            slug=slug,
+            brain_ids=brain_ids,
+        )
+
+
+def sync_paper(slug: str, title: str, tags: list[str] | None = None, brain_id: str | None = None) -> None:
+    """brain_id를 안 넘기면(기존 호출부 대부분) get_paper_brain_id()로 지금
+    이 논문이 속한 Brain을 직접 물어서 채운다 - 호출부가 매번 brain_id를 미리
+    조회해서 넘겨줄 필요 없이, 이 함수 하나만 부르면 항상 최신 소속으로
+    맞춰진다. 이미 알고 있는 값이 있으면(예: 방금 Brain을 옮긴 직후라 재조회가
+    낭비인 경우) 그대로 넘겨서 재조회를 생략할 수 있다."""
+    if brain_id is None:
+        brain_id = get_paper_brain_id(NODE_STORE_ROOT, slug)
+    driver = get_driver()
+    with driver.session() as session:
+        session.run(
+            "MERGE (p:Paper {slug: $slug}) SET p.title = $title, p.tags = $tags, p.brain_id = $brain_id",
             slug=slug,
             title=title,
             tags=tags or [],
+            brain_id=brain_id,
         )
+
+
+def retag_paper_brain(slug: str, brain_id: str | None = None) -> None:
+    """Paper 노드의 brain_id만 다시 태그한다(title/tags는 안 건드림) - Folder나
+    Brain 소속만 바뀌었을 뿐 논문 내용 자체는 안 바뀐 경우, sync_paper()처럼
+    title을 다시 조회해올 필요 없이 이 태그 하나만 갱신하면 된다. brain_id를
+    안 주면(기본값) get_paper_brain_id()로 지금 소속을 다시 계산해서 채운다.
+    MERGE가 아니라 MATCH를 쓴다 - Neo4j에 이 Paper 노드가 아직 없다면(Neo4j
+    미설정 등) title 없이 빈 노드를 새로 만들면 안 되므로, 있을 때만 갱신한다."""
+    if brain_id is None:
+        brain_id = get_paper_brain_id(NODE_STORE_ROOT, slug)
+    driver = get_driver()
+    with driver.session() as session:
+        session.run("MATCH (p:Paper {slug: $slug}) SET p.brain_id = $brain_id", slug=slug, brain_id=brain_id)
 
 
 def delete_node_from_graph(node_type: str, slug: str) -> None:
@@ -297,10 +370,21 @@ def _reciprocal_rank_fusion(*ranked_lists: list[dict]) -> list[dict]:
     return sorted(fused.values(), key=lambda h: h["score"], reverse=True)
 
 
-def search(query: str, top_k: int = 10) -> list[dict]:
+def search(query: str, top_k: int = 10, brain_id: str | None = None) -> list[dict]:
     """하이브리드 그래프 검색 - 벡터 유사도 + 풀텍스트 매치로 시드 노드를 찾고,
     각 시드에서 1촌 이웃까지 같이 반환한다(그래프 확장). GraphRAG의 핵심
-    함수 - MCP의 search_graph 툴이 이걸 그대로 노출한다."""
+    함수 - MCP의 search_graph 툴이 이걸 그대로 노출한다.
+
+    brain_id를 주면 그 Brain 범위로만 결과를 좁힌다 - Concept/Entity는
+    sync_node()가 미리 계산해 둔 brain_ids(그 노드가 걸린 논문들이 지금 속한
+    Brain 집합) 안에 brain_id가 있어야 하고, Paper는 sync_paper()가 태그한
+    brain_id가 정확히 일치해야 한다. 시드 단계(벡터/풀텍스트)뿐 아니라 이웃
+    확장 단계에서도 같은 기준으로 걸러서, 특정 Brain으로 검색했을 때 다른
+    Brain 소속 논문/개념이 이웃으로 섞여 나오지 않게 한다("그 Brain에 보이는
+    논문에서만 나온 것처럼" 필터링 - Brain을 concept/entity 파일 자체가 아니라
+    조회 시점에 계산하는 설계라, 다른 Brain에서 같은 개념을 검색하면 그 Brain
+    범위로 다시 필터링된 채로 똑같이 보일 수 있다). brain_id=None(기본값)이면
+    지금까지와 동일하게 전체 범위에서 검색한다."""
     driver = get_driver()
     query_vec = embed_query(query)
 
@@ -311,27 +395,32 @@ def search(query: str, top_k: int = 10) -> list[dict]:
         vector_hits = session.run(
             """
             CALL db.index.vector.queryNodes('concept_embedding', $k, $vec) YIELD node, score
+            WHERE $brain_id IS NULL OR $brain_id IN node.brain_ids
             RETURN node.slug AS slug, labels(node)[0] AS type, node.display_label AS label, score
             ORDER BY score DESC
             UNION
             CALL db.index.vector.queryNodes('entity_embedding', $k, $vec) YIELD node, score
+            WHERE $brain_id IS NULL OR $brain_id IN node.brain_ids
             RETURN node.slug AS slug, labels(node)[0] AS type, node.display_label AS label, score
             ORDER BY score DESC
             """,
             k=top_k,
             vec=query_vec,
+            brain_id=brain_id,
         ).data()
         vector_hits.sort(key=lambda h: h["score"], reverse=True)
 
         fulltext_hits = session.run(
             """
             CALL db.index.fulltext.queryNodes('node_fulltext', $q) YIELD node, score
+            WHERE $brain_id IS NULL OR $brain_id IN node.brain_ids
             RETURN node.slug AS slug, labels(node)[0] AS type, node.display_label AS label, score
             ORDER BY score DESC
             LIMIT $k
             """,
             q=query,
             k=top_k,
+            brain_id=brain_id,
         ).data()
 
         top_seeds = _reciprocal_rank_fusion(vector_hits, fulltext_hits)[:top_k]
@@ -342,9 +431,15 @@ def search(query: str, top_k: int = 10) -> list[dict]:
                 f"""
                 MATCH (n:{seed['type']} {{slug: $slug}})
                 OPTIONAL MATCH (n)-[:LINKED_TO]-(neighbor)
-                RETURN neighbor.slug AS slug, labels(neighbor)[0] AS type, neighbor.display_label AS label
+                WHERE neighbor IS NULL
+                   OR $brain_id IS NULL
+                   OR ('Paper' IN labels(neighbor) AND neighbor.brain_id = $brain_id)
+                   OR (NOT 'Paper' IN labels(neighbor) AND $brain_id IN neighbor.brain_ids)
+                RETURN neighbor.slug AS slug, labels(neighbor)[0] AS type,
+                       CASE WHEN 'Paper' IN labels(neighbor) THEN neighbor.title ELSE neighbor.display_label END AS label
                 """,
                 slug=seed["slug"],
+                brain_id=brain_id,
             ).data()
             results.append(
                 {

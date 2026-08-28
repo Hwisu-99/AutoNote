@@ -33,7 +33,12 @@ mcp = MCPServer(
         "설명한 새로운 개념/관계는 create_node/link_nodes로 Brain에 바로 반영해도 "
         "된다(중복 검사는 서버가 한다 - 비슷한 노드가 있으면 409 에러(existing 필드에 "
         "기존 노드 정보 포함)로 알려주니, 그 노드로 합칠지 사용자에게 확인한 뒤 정말 "
-        "새로 만들어야 하면 force=true로 다시 호출하라)."
+        "새로 만들어야 하면 force=true로 다시 호출하라). 사용자는 Brain을 여러 개 "
+        "가질 수 있다(예: Robot Brain, RL Brain) - 먼저 list_brains로 어떤 Brain이 "
+        "있는지 확인하고, 사용자가 특정 Brain을 지목하거나 대화 맥락상 범위가 "
+        "분명하면 search_graph를 호출할 때 그 Brain의 id를 brain 인자로 넘겨서 "
+        "그 Brain에 속한 논문/개념으로만 검색을 좁혀라. 어느 Brain인지 불분명하면 "
+        "brain을 생략해 전체에서 검색한다."
     ),
 )
 
@@ -53,12 +58,26 @@ def _unwrap(resp: httpx.Response) -> dict:
 
 
 @mcp.tool()
-def search_graph(query: str, top_k: int = 10) -> dict:
+def list_brains() -> list[dict]:
+    """사용자가 만든 모든 Brain 목록을 {id, name, paper_slugs, created_at}
+    형태로 반환한다. search_graph를 특정 Brain으로 좁혀 호출하기 전에 먼저
+    호출해 어떤 Brain이 있는지, id가 무엇인지 확인하는 용도."""
+    with _client() as c:
+        return _unwrap(c.get("/api/brains"))["brains"]
+
+
+@mcp.tool()
+def search_graph(query: str, top_k: int = 10, brain: str | None = None) -> dict:
     """Brain에서 질의와 관련된 concept/entity 노드를 하이브리드 검색(벡터 유사도 +
     풀텍스트)으로 찾고, 각 노드의 1촌 이웃까지 같이 반환한다. 사용자 질문에
-    답하기 전에 가장 먼저 호출해야 하는 툴이다."""
+    답하기 전에 가장 먼저 호출해야 하는 툴이다. brain에 Brain id를 넘기면 그
+    Brain에 속한 논문/개념/용어로만 결과를 좁힌다(list_brains로 id를 먼저
+    확인하라) - 생략하면 전체 Brain에서 검색한다."""
+    params = {"q": query, "top_k": top_k}
+    if brain:
+        params["brain_id"] = brain
     with _client() as c:
-        return _unwrap(c.get("/api/graph-search", params={"q": query, "top_k": top_k}))
+        return _unwrap(c.get("/api/graph-search", params=params))
 
 
 @mcp.tool()
