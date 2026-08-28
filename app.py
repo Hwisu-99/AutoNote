@@ -217,6 +217,11 @@ async def run_pipeline(tmp_path: str, vault_path: str, request: Request, overwri
             return
 
         yield _event("nodes", 65, "concept/entity 노드 파일 갱신 중...")
+        # concept/entity를 Neo4j에 동기화할 때 (Paper)-[:LINKED_TO]->(Concept|Entity)
+        # 에지를 걸려면 그 시점에 Paper 노드가 이미 있어야 한다(graph_db.sync_node()의
+        # MATCH (p:Paper {slug: ...})가 0건이면 그 아래 MERGE도 조용히 스킵되고 에러도
+        # 안 남는다) - 그래서 concept/entity 루프보다 먼저 paper부터 동기화해야 한다.
+        _sync_paper(title_slug, summary["title"], summary.get("tags", []))
         try:
             if overwrite_slug:
                 for node_type, node_slug, was_deleted in remove_source(NODE_STORE_ROOT, overwrite_slug):
@@ -246,8 +251,6 @@ async def run_pipeline(tmp_path: str, vault_path: str, request: Request, overwri
                 _sync_node("entity", entity_slug)
         except Exception as exc:  # noqa: BLE001 - 노드 파일 갱신 실패가 파이프라인 전체를 막지 않음
             print(f"  [경고] concept/entity 노드 파일 갱신 실패: {exc}")
-
-        _sync_paper(title_slug, summary["title"], summary.get("tags", []))
 
         yield _event("note", 90, "Obsidian 노트 저장 중...")
         note_path = write_note(vault_path, summary, title_slug)
