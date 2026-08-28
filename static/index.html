@@ -90,19 +90,34 @@
      만드는 게 보통의 해법이지만, 그러면 sticky가 깨진다 - 크롬에서도
      이 조합에서 재현 확인됨). 그래서 width를 명시적으로도 박아 "확정된
      크기"로 만든다 - 그러면 자동 최소 크기 계산이 min(content-based, 300)
-     = 300으로 정리된다. */
+     = 300으로 정리된다.
+
+     사이드바는 #paperListPanel 하나뿐이지만, sticky/폭 고정은 그걸 감싼
+     열(.sidebar-col)에 걸어둔다(패널을 감싸는 별도 레이어가 있어야 나중에
+     이 열에 뭔가 더 얹더라도 sticky/폭 계산을 다시 안 건드려도 된다). */
+  .sidebar-col { flex: 0 0 300px; width: 300px; position: sticky; top: 80px; display: flex; flex-direction: column; gap: 12px; }
   #paperListPanel {
-    flex: 0 0 300px; width: 300px; height: 620px;
+    width: 100%; height: 620px; box-sizing: border-box;
     background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
     box-shadow: var(--shadow); padding: 20px; display: flex; flex-direction: column;
-    position: sticky; top: 80px;
   }
-  .panel-title { font-weight: 700; font-size: var(--fs-xs); letter-spacing: .06em; text-transform: uppercase; color: var(--text-muted); margin-bottom: 12px; }
+  /* 예전엔 "저장된 논문" 라벨 + 버튼 하나였는데, 라벨을 빼고 나니 이 줄 전체가
+     아이콘 버튼 묶음(Brain 탭 토글/새 폴더/전체 펼치기·접기/정렬/밀도) 하나로
+     채워진다 - 텍스트가 없어졌으니 좌우로 벌릴 대상도 없어서 justify-content는
+     그냥 기본값(flex-start)으로 왼쪽부터 채운다. */
   .panel-title-row {
-    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    display: flex; align-items: center; justify-content: center; gap: 8px;
     margin: -20px -20px 12px; padding: 12px 14px; border-bottom: 1px solid var(--border);
   }
-  .panel-title-row .panel-title { margin-bottom: 0; }
+  /* 참고 이미지처럼 아이콘끼리 넉넉히 떨어진 툴바 배치 - 이전엔 gap:2px로
+     다닥다닥 붙어 있었다. */
+  .panel-title-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+  /* 이 5개 버튼만 더 크고 색이 다르게 - 공유 클래스(.panel-icon-btn)의 26px
+     히트박스/회색은 논문·폴더 행 아이콘(같은 클래스 재사용)까지 다 같이
+     바뀌므로 건드리지 않고, panel-title-actions 안에서만 덮어쓴다. 색은
+     그래프 뷰의 논문(note) 노드와 같은 --accent - 이 패널이 다루는 게
+     결국 논문이라 그 노드 색과 맞춘다. */
+  .panel-title-actions .panel-icon-btn { width: 34px; height: 34px; color: var(--accent); }
   /* 아이콘 버튼 3종(패널 헤더의 새 폴더, 논문/폴더 행의 그래프 토글·삭제)은
      크기·모양이 완전히 같은 하나의 컴포넌트였는데 각자 따로 정의돼 있었다 -
      여기서 베이스를 하나로 합치고, 호버 시 의미에 따라 갈리는 색(중립=accent,
@@ -113,10 +128,31 @@
     transition: background .15s ease, color .15s ease;
   }
   .panel-icon-btn:hover, .paper-graph-btn:hover { background: var(--accent-soft); color: var(--accent); }
-  .paper-graph-btn.active { background: var(--accent); color: var(--surface); }
-  .paper-graph-btn.active:hover { background: var(--accent-hover, var(--accent)); }
+  .panel-icon-btn.active, .paper-graph-btn.active { background: var(--accent); color: var(--surface); }
+  .panel-icon-btn.active:hover, .paper-graph-btn.active:hover { background: var(--accent-hover, var(--accent)); }
+  /* 뇌 아이콘은 raster 이미지라 currentColor로 흰색 반전이 안 된다 - active일 때
+     배경을 꽉 채우는 대신 옅은 링으로 "선택됨"을 표시한다. */
+  .brain-icon-img { width: 22px; height: auto; display: block; }
+  #btnToggleBrainTabs.active, #btnToggleBrainTabs.active:hover {
+    background: var(--accent-soft);
+    box-shadow: inset 0 0 0 1.5px var(--accent);
+  }
   .paper-delete-btn:hover { background: var(--error-soft); color: var(--error); }
-  #paperList { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  /* 촘촘하게 보기 토글(#btnToggleDensity) - 행 패딩/간격만 줄인다. */
+  #paperList.compact .paper-title { padding: 3px 8px; }
+  #paperList.compact .folder-name { padding: 3px 4px; }
+  #paperList.compact { gap: 0; }
+  #paperList.compact .folder-body { gap: 0; }
+  #paperList {
+    flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; min-width: 0;
+    scrollbar-width: thin; scrollbar-color: var(--border) transparent;
+  }
+  /* 파이어폭스는 scrollbar-width/color로 충분하지만, 크롬/엣지/사파리(WebKit)는
+     기본 스크롤바가 굵게 나와서 별도 의사 요소로 얇게 맞춰야 한다. */
+  #paperList::-webkit-scrollbar { width: 6px; }
+  #paperList::-webkit-scrollbar-track { background: transparent; }
+  #paperList::-webkit-scrollbar-thumb { background: var(--border); border-radius: 999px; }
+  #paperList::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
   /* min-width: 0 - #paperList가 flex-column이라 .paper-row/.folder-block도 그
      안의 flex item이다. 기본값 min-width:auto인 flex item은 안의 긴 논문
      제목(.paper-title에 이미 overflow:hidden+ellipsis가 있어도) 때문에 패널
@@ -144,6 +180,7 @@
      넣고 빼므로(papers.js), 드래그 중인 폴더는 drag-over 클래스로 강조한다. */
   .folder-block { display: flex; flex-direction: column; gap: 2px; margin-bottom: 4px; border-radius: var(--radius-sm); min-width: 0; }
   .folder-block.drag-over { background: var(--accent-soft); }
+  .folder-block.dragging { opacity: .4; }
   .folder-header { display: flex; align-items: center; gap: 2px; border-radius: var(--radius-sm); padding: 2px; min-width: 0; }
   .folder-toggle-btn {
     flex-shrink: 0; width: 18px; height: 26px; display: flex; align-items: center; justify-content: center;
@@ -159,6 +196,34 @@
      임시 행 - 확인 버튼 없이 Enter/포커스 아웃으로 바로 생성된다(papers.js). */
   .folder-ghost-row { display: flex; align-items: center; gap: 2px; padding: 2px; }
   .folder-name-input {
+    flex: 1; min-width: 0; font-size: var(--fs-base); font-weight: 600; color: var(--text);
+    padding: 5px 6px; margin: 1px 0; border-radius: var(--radius-sm);
+    border: 1px solid var(--accent); background: var(--surface); outline: none;
+  }
+
+  /* Brain별로 묶어보기(뇌 아이콘 토글) - #brainTabs 탭 바가 하던 일을 이제
+     #paperList 안에서 직접 한다. 폴더와 같은 감싸기(.folder-block)/토글
+     구조를 그대로 재사용하되, 그 위 한 단계 컨테이너라는 걸 표시하려고
+     헤더 배경만 옅게 얹는다 - 안쪽 folder-block/paper-row는 평소와 완전히
+     같은 컴포넌트다(brain-body에 folder-body와 같은 들여쓰기 클래스를 쓴다). */
+  .brain-block { display: flex; flex-direction: column; gap: 2px; margin-bottom: 6px; border-radius: var(--radius-sm); min-width: 0; }
+  .brain-header {
+    display: flex; align-items: center; gap: 2px; border-radius: var(--radius-sm); padding: 2px;
+    min-width: 0; background: var(--accent-soft);
+  }
+  .brain-header.drag-over { box-shadow: inset 0 0 0 1.5px var(--accent); }
+  .brain-block.dragging { opacity: .4; }
+  .brain-block-icon { flex-shrink: 0; width: 14px; height: 14px; display: block; margin: 0 4px 0 2px; }
+  .brain-body { margin-left: 20px; }
+  .brain-body .paper-empty { padding: 4px; }
+  .brain-add-row {
+    display: block; width: 100%; text-align: left; margin-bottom: 4px;
+    padding: 6px 4px; border-radius: var(--radius-sm); border: none; background: none;
+    color: var(--text-muted); font-size: var(--fs-sm); font-weight: 600; cursor: pointer;
+  }
+  .brain-add-row:hover { background: var(--accent-soft); color: var(--accent); }
+  .brain-ghost-row { display: flex; align-items: center; padding: 2px; margin-bottom: 4px; }
+  .brain-name-input {
     flex: 1; min-width: 0; font-size: var(--fs-base); font-weight: 600; color: var(--text);
     padding: 5px 6px; margin: 1px 0; border-radius: var(--radius-sm);
     border: 1px solid var(--accent); background: var(--surface); outline: none;
@@ -276,19 +341,51 @@
 </header>
 <div class="page">
 <div class="layout">
+<div class="sidebar-col">
 <aside id="paperListPanel">
   <div class="panel-title-row">
-    <div class="panel-title">저장된 논문</div>
-    <button type="button" id="btnNewFolder" class="panel-icon-btn" title="새 폴더">
-      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/>
-        <line x1="12" y1="11" x2="12" y2="15"/>
-        <line x1="10" y1="13" x2="14" y2="13"/>
-      </svg>
-    </button>
+    <div class="panel-title-actions">
+      <button type="button" id="btnToggleBrainTabs" class="panel-icon-btn" title="Brain별로 묶어보기">
+        <img class="brain-icon-img" src="/brain-node-icon.png" alt="">
+      </button>
+      <button type="button" id="btnNewFolder" class="panel-icon-btn" title="새 폴더">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
+          <line x1="12" y1="12" x2="12" y2="18"/>
+          <line x1="9" y1="15" x2="15" y2="15"/>
+        </svg>
+      </button>
+      <button type="button" id="btnToggleCollapseAll" class="panel-icon-btn" title="폴더 전체 펼치기/접기">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="8" y1="6" x2="21" y2="6"/>
+          <line x1="8" y1="12" x2="21" y2="12"/>
+          <line x1="8" y1="18" x2="21" y2="18"/>
+          <line x1="3" y1="6" x2="3.01" y2="6"/>
+          <line x1="3" y1="12" x2="3.01" y2="12"/>
+          <line x1="3" y1="18" x2="3.01" y2="18"/>
+        </svg>
+      </button>
+      <button type="button" id="btnToggleSort" class="panel-icon-btn" title="이름순 정렬">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="3" y1="6" x2="21" y2="6"/>
+          <line x1="6" y1="12" x2="18" y2="12"/>
+          <line x1="10" y1="18" x2="14" y2="18"/>
+        </svg>
+      </button>
+      <button type="button" id="btnToggleDensity" class="panel-icon-btn" title="촘촘하게 보기">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="4 14 10 14 10 20"/>
+          <polyline points="20 10 14 10 14 4"/>
+          <line x1="14" y1="10" x2="21" y2="3"/>
+          <line x1="3" y1="21" x2="10" y2="14"/>
+        </svg>
+      </button>
+    </div>
   </div>
   <div id="paperList"></div>
 </aside>
+</div>
 <main>
   <div class="eyebrow">새 논문</div>
   <h1>논문을 올려 BrainGraph로 변환하기</h1>
