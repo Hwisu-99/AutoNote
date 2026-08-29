@@ -72,7 +72,20 @@ def search_graph(query: str, top_k: int = 10, brain: str | None = None) -> dict:
     풀텍스트)으로 찾고, 각 노드의 1촌 이웃까지 같이 반환한다. 사용자 질문에
     답하기 전에 가장 먼저 호출해야 하는 툴이다. brain에 Brain id를 넘기면 그
     Brain에 속한 논문/개념/용어로만 결과를 좁힌다(list_brains로 id를 먼저
-    확인하라) - 생략하면 전체 Brain에서 검색한다."""
+    확인하라) - 생략하면 전체 Brain에서 검색한다.
+
+    각 이웃(neighbors[])에는 relation/direction 필드가 있다 - 논문 출처로만
+    연결된 이웃(예: Paper)은 둘 다 null이지만, PART_OF/USES/EXTENDS/IS_A/
+    IMPROVES_ON/OUTPERFORMS/SOLVES/EVALUATED_ON/LIMITED_BY/COMPARED_TO/
+    CONTRADICTS/RELATED 중 하나로 연결된 이웃은 relation에 그 타입이,
+    direction에 이 노드가 관계의 주체(outgoing)인지 대상(incoming)인지가
+    채워진다. 답변할 때 이 정보를 "왜 관련 있는지"의 근거로 적극 활용하라 -
+    예: relation=EXTENDS, direction=outgoing이면 "A가 B를 확장한다"는 뜻이다.
+
+    단, COMPARED_TO/CONTRADICTS/RELATED는 원래 방향이 없는 대칭 관계라서,
+    direction 값(outgoing/incoming)은 저장 시점에 어느 쪽이 정규화 소유자가
+    됐는지를 반영할 뿐 실제 의미는 아니다 - 이 세 타입은 direction을 무시하고
+    "A와 B가 비교된다/상충한다/관련 있다"처럼 방향 없이 서술하라."""
     params = {"q": query, "top_k": top_k}
     if brain:
         params["brain_id"] = brain

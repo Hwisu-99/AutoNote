@@ -26,6 +26,7 @@ from paper_notes.node_store import (
     DuplicateNodeError,
     add_alias,
     add_category,
+    add_relation,
     create_node_manual,
     delete_node,
     find_entities_by_concept,
@@ -46,6 +47,7 @@ from paper_notes.node_store import (
     unlink_concept_from_entity,
     update_user_section,
 )
+from paper_notes.relation_types import load_relation_types
 from paper_notes.brains import (
     create_brain,
     delete_brain,
@@ -239,6 +241,96 @@ async def _summarize_cancellable(paper_text: str, request: Request) -> tuple[dic
             return None
 
 
+def ingest_summary_nodes(
+    store_root: str,
+    title_slug: str,
+    summary: dict,
+    sync_node_fn=lambda node_type, slug: None,
+) -> dict:
+    """summarize_paper()의 결과(summary)에서 concepts/entities/relationships를
+    읽어 store_root 아래 concept/entity 노드 파일에 반영한다 - run_pipeline()의
+    노드 생성 단계를 그대로 뺀 것이다(로직 중복을 피하려고 별도 함수로 분리 -
+    temp/test_ingest.py 같은 격리된 테스트 스크립트도 이 함수를 그대로 불러
+    실제 파이프라인과 정확히 같은 결과를 API 비용 없이 반복 확인할 수 있다).
+
+    concept -> entity 순서로 먼저 전부 만들어서 이번 응답 안에서의 임시 id
+    (예: 'c1', 'e1') -> 확정 slug 매핑을 완성한 뒤에만 relationships를
+    처리한다 - relationships의 from_id/to_id는 항상 이 논문 자신의 concepts/
+    entities 목록만 가리키므로(스키마 자체가 그렇게 제한, claude_client.py
+    참고) 이 시점엔 두 endpoint 모두 이미 실제 slug로 확정돼 있다. Paper는
+    절대 관계의 endpoint가 될 수 없다 - id 매핑 자체가 concept/entity id
+    공간뿐이라 애초에 나올 수가 없다(docs/description/relation_types.md 참고).
+
+    sync_node_fn(node_type, slug)는 노드/관계가 하나 갱신될 때마다 호출된다 -
+    실제 파이프라인(run_pipeline)은 Neo4j sync 함수(_sync_node)를 넘기고,
+    격리된 테스트 store에 대해서는 기본값(아무 것도 안 함)을 그대로 둔다 -
+    graph_db.py는 NODE_STORE_ROOT 상수를 직접 참조하므로 store_root를 몰라,
+    테스트 store에 대해 Neo4j sync를 부르면 실제 vault를 잘못 건드리거나
+    엉뚱한 slug를 찾다 조용히 스킵되는 문제가 생긴다.
+
+    반환값: {"concept_slugs", "entity_slugs", "relations_created"} - 호출부가
+    결과를 요약해 보여줄 때 쓴다."""
+    concept_slug_by_id: dict[str, str] = {}
+    for c in summary.get("concepts", []):
+        concept_slug_by_id[c["id"]] = resolve_or_create_node(
+            store_root, "concept", c["label"], c.get("aliases", []),
+            title_slug, summary["title"], category=c.get("category"),
+            description=c.get("description", ""), note=c.get("note", ""),
+        )
+        sync_node_fn("concept", concept_slug_by_id[c["id"]])
+
+    entity_slug_by_id: dict[str, str] = {}
+    for e in summary.get("entities", []):
+        entity_slug = resolve_or_create_node(
+            store_root, "entity", e["label"], e.get("aliases", []),
+            title_slug, summary["title"],
+            description=e.get("description", ""), note=e.get("note", ""),
+            concept_slug=concept_slug_by_id.get(e.get("concept_id")) if e.get("concept_id") else None,
+        )
+        if e.get("id"):
+            entity_slug_by_id[e["id"]] = entity_slug
+        sync_node_fn("entity", entity_slug)
+
+    relation_types = load_relation_types(store_root)
+    id_maps = {"concept": concept_slug_by_id, "entity": entity_slug_by_id}
+    relations_created = 0
+    for rel in summary.get("relationships", []):
+        rel_type = rel.get("type")
+        if rel_type not in relation_types:
+            print(f"  [경고] 알 수 없는 관계 타입 건너뜀: {rel}")
+            continue
+        from_map = id_maps.get(rel.get("from_type"))
+        to_map = id_maps.get(rel.get("to_type"))
+        if from_map is None or to_map is None:
+            continue
+        from_slug = from_map.get(rel.get("from_id"))
+        to_slug = to_map.get(rel.get("to_id"))
+        if not from_slug or not to_slug or from_slug == to_slug:
+            continue
+        from_type, to_type = rel["from_type"], rel["to_type"]
+        # 대칭 타입(COMPARED_TO/CONTRADICTS/RELATED)은 LLM이 논문마다 어느
+        # 쪽을 먼저 언급했든 상관없이 (type, slug) 알파벳순으로 from/to를
+        # 재배치한다 - 그래야 "X compared_to Y"와 "Y compared_to X"가 같은
+        # 방향의 에지 하나로 합쳐진다.
+        if relation_types[rel_type].get("symmetric") and (from_type, from_slug) > (to_type, to_slug):
+            from_type, from_slug, to_type, to_slug = to_type, to_slug, from_type, from_slug
+        try:
+            add_relation(
+                store_root, from_type, from_slug, rel_type, to_type, to_slug,
+                title_slug, rationale=rel.get("rationale", ""),
+            )
+            sync_node_fn(from_type, from_slug)
+            relations_created += 1
+        except Exception as exc:  # noqa: BLE001 - 관계 하나 실패가 전체를 막지 않음
+            print(f"  [경고] 관계 저장 실패({from_slug}->{to_slug}): {exc}")
+
+    return {
+        "concept_slugs": list(concept_slug_by_id.values()),
+        "entity_slugs": list(entity_slug_by_id.values()),
+        "relations_created": relations_created,
+    }
+
+
 async def run_pipeline(tmp_path: str, vault_path: str, request: Request, overwrite_slug: str | None = None):
     try:
         if await request.is_disconnected():
@@ -287,22 +379,7 @@ async def run_pipeline(tmp_path: str, vault_path: str, request: Request, overwri
             # 어느 concept 밑에 묶이는지는 Claude가 이 논문만 보고 낸 원본 라벨이
             # 아니라, 실제로 확정된(기존 노드에 병합됐을 수도 있는) concept의
             # slug를 가리켜야 한다.
-            concept_slug_by_id: dict[str, str] = {}
-            for c in summary.get("concepts", []):
-                concept_slug_by_id[c["id"]] = resolve_or_create_node(
-                    NODE_STORE_ROOT, "concept", c["label"], c.get("aliases", []),
-                    title_slug, summary["title"], category=c.get("category"),
-                    description=c.get("description", ""), note=c.get("note", ""),
-                )
-                _sync_node("concept", concept_slug_by_id[c["id"]])
-            for e in summary.get("entities", []):
-                entity_slug = resolve_or_create_node(
-                    NODE_STORE_ROOT, "entity", e["label"], e.get("aliases", []),
-                    title_slug, summary["title"],
-                    description=e.get("description", ""), note=e.get("note", ""),
-                    concept_slug=concept_slug_by_id.get(e.get("concept_id")) if e.get("concept_id") else None,
-                )
-                _sync_node("entity", entity_slug)
+            ingest_summary_nodes(NODE_STORE_ROOT, title_slug, summary, sync_node_fn=_sync_node)
         except Exception as exc:  # noqa: BLE001 - 노드 파일 갱신 실패가 파이프라인 전체를 막지 않음
             print(f"  [경고] concept/entity 노드 파일 갱신 실패: {exc}")
 

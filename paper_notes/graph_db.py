@@ -22,7 +22,8 @@ import threading
 
 from paper_notes.embeddings import embed_passage, embed_query, embedding_dimension
 from paper_notes.brains import get_paper_brain_id
-from paper_notes.node_store import NODE_STORE_ROOT, get_user_section, list_nodes
+from paper_notes.node_store import NODE_STORE_ROOT, get_relations, get_user_section, list_nodes
+from paper_notes.relation_types import load_relation_types
 
 _driver = None
 _driver_lock = threading.Lock()
@@ -227,6 +228,44 @@ def sync_node(node_type: str, slug: str) -> None:
                     slug=slug,
                 )
 
+        # 이 노드에서 "나가는" semantic 관계(LINKED_TO가 아닌 전부)를 통째로
+        # 지우고 지금 frontmatter의 relations[]로 다시 만든다 - 위 LINKED_TO
+        # 재생성과 대칭이지만 방향이 정반대다: LINKED_TO는 "들어오는" 쪽이
+        # sources[] 기준으로 재생성되는 반면, semantic 관계는 항상 "나가는" 쪽
+        # frontmatter가 source of truth다(docs/description/relation_types.md
+        # 참고 - 두 노드가 서로 상대 frontmatter에 같은 관계를 중복 기록하면
+        # 이 재생성 로직이 꼬여 유령 에지가 생긴다). 이 그래프에 존재하는 관계
+        # 타입은 LINKED_TO와 화이트리스트의 semantic 타입뿐이라는 불변식이
+        # 있어서 "LINKED_TO가 아니면 곧 semantic"으로 안전하게 판단할 수
+        # 있다.
+        session.run(
+            f"MATCH (n:{label} {{slug: $slug}})-[r]->() WHERE type(r) <> 'LINKED_TO' DELETE r",
+            slug=slug,
+        )
+
+        relation_types = load_relation_types(NODE_STORE_ROOT)
+        for rel in get_relations(NODE_STORE_ROOT, node_type, slug):
+            rel_type = rel.get("type")
+            target_label = _LABEL_BY_TYPE.get(rel.get("target_type"))
+            # 화이트리스트에 없는 타입은 절대 Cypher 문자열에 보간하지 않는다
+            # (Cypher는 관계 타입을 파라미터로 못 받아 f-string 보간이
+            # 불가피한데, 검증 없이 보간하면 인젝션 위험이 생긴다).
+            if rel_type not in relation_types or target_label is None:
+                print(f"  [경고] 알 수 없는 관계 타입/대상 건너뜀: {rel}")
+                continue
+            session.run(
+                f"""
+                MATCH (a:{label} {{slug: $from_slug}})
+                MATCH (b:{target_label} {{slug: $to_slug}})
+                MERGE (a)-[r:{rel_type}]->(b)
+                SET r.sources = $sources, r.rationale = $rationale
+                """,
+                from_slug=slug,
+                to_slug=rel.get("target_slug"),
+                sources=rel.get("sources") or [],
+                rationale=rel.get("rationale", ""),
+            )
+
 
 def retag_node_brain(node_type: str, slug: str) -> None:
     """concept/entity 노드의 brain_ids만 다시 계산해 SET한다 - sync_node()
@@ -427,16 +466,28 @@ def search(query: str, top_k: int = 10, brain_id: str | None = None) -> list[dic
 
         results = []
         for seed in top_seeds:
+            # -[r]- (타입 미지정, 무방향)로 바꿔서 LINKED_TO(출처)와 semantic
+            # 관계(PART_OF/EXTENDS/... - docs/description/relation_types.md)를
+            # 한 번에 같이 훑는다. Cypher는 -[r:TYPE1|TYPE2|...]- 처럼 명시적
+            # 타입 나열 없이도 "아무 관계나"를 표현할 수 있어서, 화이트리스트를
+            # 여기서 알 필요가 없다(sync_node()가 이미 저장 시점에 검증했다).
+            # relation/direction은 LINKED_TO일 땐 의미가 없으므로 null로 두고,
+            # semantic 관계일 때만 채운다 - startNode(r) = n이면 이 시드가 관계의
+            # 주체(outgoing, "n이 TYPE을 neighbor에게 한다"), 아니면 대상
+            # (incoming, "neighbor가 TYPE을 n에게 한다")이라는 뜻이다.
             neighbors = session.run(
                 f"""
                 MATCH (n:{seed['type']} {{slug: $slug}})
-                OPTIONAL MATCH (n)-[:LINKED_TO]-(neighbor)
+                OPTIONAL MATCH (n)-[r]-(neighbor)
                 WHERE neighbor IS NULL
                    OR $brain_id IS NULL
                    OR ('Paper' IN labels(neighbor) AND neighbor.brain_id = $brain_id)
                    OR (NOT 'Paper' IN labels(neighbor) AND $brain_id IN neighbor.brain_ids)
                 RETURN neighbor.slug AS slug, labels(neighbor)[0] AS type,
-                       CASE WHEN 'Paper' IN labels(neighbor) THEN neighbor.title ELSE neighbor.display_label END AS label
+                       CASE WHEN 'Paper' IN labels(neighbor) THEN neighbor.title ELSE neighbor.display_label END AS label,
+                       CASE WHEN r IS NULL OR type(r) = 'LINKED_TO' THEN NULL ELSE type(r) END AS relation,
+                       CASE WHEN r IS NULL OR type(r) = 'LINKED_TO' THEN NULL
+                            WHEN startNode(r) = n THEN 'outgoing' ELSE 'incoming' END AS direction
                 """,
                 slug=seed["slug"],
                 brain_id=brain_id,

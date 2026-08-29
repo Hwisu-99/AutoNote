@@ -5,6 +5,15 @@ import json
 import anthropic
 
 from paper_notes.node_store import CONCEPT_CATEGORIES
+from paper_notes.relation_types import DEFAULT_RELATION_TYPES
+
+# LLM이 relationships.type으로 뽑을 수 있는 값의 상한선 - graph_db.py/
+# node_store.add_relation()이 실제 저장/동기화 시점에 검증하는 화이트리스트와
+# 같은 원본(DEFAULT_RELATION_TYPES)을 쓴다. config/relation_types.json으로
+# 사용자가 로컬에서 어휘를 늘려도 이 스키마 enum엔 아직 반영되지 않는다(모듈
+# 로드 시점에 고정) - 지금은 기본 12개 안에서만 추출하는 것으로 충분하다고
+# 판단했고, 나중에 필요하면 summarize_paper()가 store_root를 받아 매 호출마다
+# load_relation_types()로 스키마를 동적으로 구성하게 확장할 수 있다.
 
 MODEL = "claude-sonnet-5"
 
@@ -262,6 +271,14 @@ SCHEMA = {
             "items": {
                 "type": "object",
                 "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": (
+                            "이 entity를 이번 응답 안에서 가리키기 위한 임시 id(예: 'e1'). "
+                            "concepts의 id와 마찬가지로 relationships에서 이 entity를 "
+                            "from_id/to_id로 참조할 때 쓴다."
+                        ),
+                    },
                     "label": {
                         "type": "string",
                         "description": (
@@ -293,24 +310,47 @@ SCHEMA = {
                         "description": "레퍼런스 표의 '비고' 칸에 들어갈 보충 설명. 없으면 빈 문자열.",
                     },
                 },
-                "required": ["label", "concept_id", "aliases", "description", "note"],
+                "required": ["id", "label", "concept_id", "aliases", "description", "note"],
                 "additionalProperties": False,
             },
         },
         "relationships": {
             "type": "array",
             "description": (
-                "개념 노드 간의 관계 (화살표). 논리적 흐름(입력→처리→결과) 순서를 반영할 "
-                "것. from_id/to_id는 위 concepts 목록의 id만 사용할 것."
+                "concept<->concept, concept<->entity, entity<->entity 사이의 실제 지식 "
+                "관계(그래프 검색이 따라갈 에지). Paper 자체는 절대 관계의 대상이 될 수 "
+                "없다 - from_id/to_id는 반드시 위 concepts 또는 entities 목록의 id만 "
+                "사용하고, from_type/to_type으로 그 id가 concepts 목록의 것인지 entities "
+                "목록의 것인지 명시할 것. type은 정해진 12개 값 중 하나만 쓸 것 - 방향은 "
+                "항상 'from이 TYPE을 to에게 한다'는 주어-동사-목적어로 읽는다(예: EXTENDS면 "
+                "from=확장하는 쪽/더 새로운 연구, to=확장 대상/기반 연구. PART_OF면 "
+                "from=부분/구성요소, to=전체. IS_A면 from=구체적 사례, to=상위 범주. SOLVES면 "
+                "from=해결하는 방법, to=해결되는 문제. EVALUATED_ON이면 from=평가받는 방법, "
+                "to=평가 기준/데이터셋. LIMITED_BY면 from=한계를 가진 대상, to=그 한계). "
+                "COMPARED_TO/CONTRADICTS/RELATED는 원래 방향이 없는 대칭 관계이므로 논문이 "
+                "서술한 순서 그대로 적으면 되고(저장 시점에 자동으로 정규화됨), 위 어떤 "
+                "타입에도 안 맞으면 RELATED를 쓸 것. 논문에 실제로 근거가 있는 관계만 "
+                "포함하고 있을 법한 관계를 지어내지 말 것."
             ),
             "items": {
                 "type": "object",
                 "properties": {
                     "from_id": {"type": "string"},
+                    "from_type": {"type": "string", "enum": ["concept", "entity"]},
                     "to_id": {"type": "string"},
-                    "label": {"type": "string", "description": "10자 이내로 짧게"},
+                    "to_type": {"type": "string", "enum": ["concept", "entity"]},
+                    "type": {"type": "string", "enum": sorted(DEFAULT_RELATION_TYPES)},
+                    "rationale": {
+                        "type": "string",
+                        "description": (
+                            "이 관계를 이 type으로 분류한 근거를 한 문장으로. "
+                            "논문에 실제로 나온 표현/문맥을 짧게 요약할 것 "
+                            "(예: '동일 벤치마크(WMT14)에서 직접 성능을 비교함'). "
+                            "없으면 빈 문자열."
+                        ),
+                    },
                 },
-                "required": ["from_id", "to_id"],
+                "required": ["from_id", "from_type", "to_id", "to_type", "type", "rationale"],
                 "additionalProperties": False,
             },
         },

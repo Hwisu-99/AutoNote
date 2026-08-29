@@ -15,6 +15,9 @@ __pycache__/
 # docs/neo4j/synchronize.md) - 코드가 아니라 사용자 개인 기록이라 버전관리 제외
 /docs/
 
+# 그래프 뷰 테스트 공간
+/temp/
+
 # concept/entity 노드 파일 저장소(paper_notes/node_store.py). Obsidian vault가
 # 아니라 이 프로젝트 폴더 아래에 저장되며, 사용자별 로컬 데이터라 버전관리 제외
 /_concepts

@@ -47,6 +47,7 @@ from pathlib import Path
 import yaml
 
 from paper_notes.dedup import labels_match, normalize_label
+from paper_notes.relation_types import load_relation_types
 
 _FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)
 _DIR_BY_TYPE = {"concept": "_concepts", "entity": "_entities"}
@@ -1169,6 +1170,134 @@ def remove_category(store_root: str, slug: str, category: str) -> list[str]:
     user_section = _extract_user_section(path)
     _write_node_file(path, frontmatter, user_section)
     return categories
+
+
+def add_relation(
+    store_root: str,
+    node_type: str,
+    slug: str,
+    relation_type: str,
+    target_type: str,
+    target_slug: str,
+    source_paper_slug: str,
+    rationale: str = "",
+) -> list[dict]:
+    """slug 노드(from)에서 target_slug 노드(to)로 나가는 semantic 관계 하나를
+    frontmatter의 relations[]에 반영한다(concept<->concept, concept<->entity,
+    entity<->entity만 대상 - Paper는 여기 endpoint로 올 수 없다,
+    docs/description/relation_types.md 참고). 같은 (relation_type, target_type,
+    target_slug) 조합이 이미 있으면 새로 추가하지 않고 그 항목의 sources에
+    source_paper_slug만 누적한다 - 여러 논문이 같은 관계를 반복 주장하면 에지
+    하나에 근거가 쌓이는 것이지, 병렬 에지가 여러 개 생기는 게 아니다. 대칭
+    타입(COMPARED_TO 등)의 from/to 정규화는 이 함수가 아니라 호출하는 쪽
+    (app.py의 run_pipeline)이 slug 알파벳순으로 미리 정해서 넘겨야 한다 - 이
+    함수는 "누가 from이고 누가 to인지"를 이미 확정된 입력으로 받는다.
+
+    relation_type은 반드시 화이트리스트(load_relation_types)에 있는 값이어야
+    한다 - graph_db.sync_node()가 이 값을 그대로 Cypher 관계 타입으로 쓰므로,
+    여기서 걸러두지 않으면 잘못된 값이 그래프 동기화 단계까지 넘어간다.
+    갱신된 relations 목록을 반환한다."""
+    relation_types = load_relation_types(store_root)
+    if relation_type not in relation_types:
+        raise ValueError(f"'{relation_type}'는 등록된 관계 타입이 아닙니다.")
+    if target_type not in ("concept", "entity"):
+        raise ValueError(f"'{target_type}'는 올바른 대상 타입이 아닙니다(concept|entity만 가능).")
+
+    path = _node_dir(store_root, node_type) / f"{slug}.md"
+    frontmatter = _read_frontmatter(path)
+    if not frontmatter.get("slug"):
+        raise FileNotFoundError(f"노드 파일을 찾을 수 없습니다: {slug}")
+    if frontmatter.get("redirect_to"):
+        raise ValueError(f"'{slug}'는 다른 노드로 병합되어 더 이상 독립된 노드가 아닙니다.")
+
+    relations = frontmatter.get("relations") or []
+    existing = next(
+        (
+            r for r in relations
+            if r.get("type") == relation_type
+            and r.get("target_type") == target_type
+            and r.get("target_slug") == target_slug
+        ),
+        None,
+    )
+    if existing is None:
+        relations.append(
+            {
+                "type": relation_type,
+                "target_type": target_type,
+                "target_slug": target_slug,
+                "rationale": rationale,
+                "sources": [source_paper_slug] if source_paper_slug else [],
+            }
+        )
+    else:
+        if rationale and not existing.get("rationale"):
+            existing["rationale"] = rationale
+        sources = existing.setdefault("sources", [])
+        if source_paper_slug and source_paper_slug not in sources:
+            sources.append(source_paper_slug)
+    frontmatter["relations"] = relations
+
+    user_section = _extract_user_section(path)
+    _write_node_file(path, frontmatter, user_section)
+    return relations
+
+
+def get_relations(store_root: str, node_type: str, slug: str) -> list[dict]:
+    """slug 노드에서 나가는 semantic 관계 목록(frontmatter의 relations[])을
+    그대로 반환한다. graph_db.sync_node()가 이 값으로 Neo4j 에지를 다시
+    만든다."""
+    path = _node_dir(store_root, node_type) / f"{slug}.md"
+    return _read_frontmatter(path).get("relations") or []
+
+
+def remove_relation(
+    store_root: str,
+    node_type: str,
+    slug: str,
+    relation_type: str,
+    target_type: str,
+    target_slug: str,
+) -> bool:
+    """사용자가 그래프 뷰에서 semantic 관계 에지 하나를 지울 때 쓴다. slug 노드
+    (from)의 frontmatter relations[]에서 (relation_type, target_type,
+    target_slug) 조합과 일치하는 항목을 통째로 제거한다.
+
+    add_relation()의 단일 소유권 규칙(docs/description/relation_types.md 참고)
+    덕분에 이 함수는 remove_source_from_node()/unlink_concept_from_entity()보다
+    단순하다: semantic 관계는 from 노드의 frontmatter에만 존재하고 to 노드
+    쪽에는 애초에 사본이 전혀 없으므로(대칭 타입도 저장 시점에 이미 한쪽으로
+    정규화됨), from 쪽 파일 하나만 고치면 끝이고 "지웠는데 to 쪽에 유령
+    항목이 남는" 경우 자체가 구조적으로 생길 수 없다. 호출하는 쪽(그래프
+    뷰 서버)이 그래프에 그려진 에지의 from/to를 그대로 넘기기만 하면 된다 -
+    대칭 타입이라도 그래프 데이터가 이미 정규화된 방향으로 들어 있어서 여기서
+    다시 방향을 판단할 필요가 없다.
+
+    relations가 비어도 파일은 지우지 않는다(remove_source_from_node/
+    unlink_concept_from_entity와 같은 이유 - alias/description/사용자 메모 같은
+    이 노드의 다른 데이터를 보존한다). 실제로 항목을 지웠으면 True, 그런
+    항목이 애초에 없었으면 False."""
+    path = _node_dir(store_root, node_type) / f"{slug}.md"
+    frontmatter = _read_frontmatter(path)
+    if not frontmatter.get("slug"):
+        raise FileNotFoundError(f"노드 파일을 찾을 수 없습니다: {slug}")
+
+    relations = frontmatter.get("relations") or []
+    remaining = [
+        r for r in relations
+        if not (
+            r.get("type") == relation_type
+            and r.get("target_type") == target_type
+            and r.get("target_slug") == target_slug
+        )
+    ]
+    if len(remaining) == len(relations):
+        return False
+
+    frontmatter["relations"] = remaining
+    user_section = _extract_user_section(path)
+    _write_node_file(path, frontmatter, user_section)
+    return True
 
 
 def _update_node(
