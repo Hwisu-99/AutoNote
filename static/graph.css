@@ -51,6 +51,9 @@ body.node-mode #nodeModeView { display: flex; }
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm);
   color: var(--text-muted); font-size: var(--fs-xs); font-weight: 600; white-space: nowrap; flex-shrink: 0;
   padding: 4px 10px; cursor: pointer; transition: border-color .15s ease, color .15s ease, background .15s ease;
+  /* .graph-btn는 <button>뿐 아니라 <a>(예: Semantic View 링크)에도 붙는다 -
+     앵커 기본 밑줄/색을 지워서 버튼과 똑같이 보이게 한다. */
+  text-decoration: none; display: inline-block;
 }
 .graph-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 .graph-btn.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }

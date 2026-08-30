@@ -1300,6 +1300,44 @@ def remove_relation(
     return True
 
 
+def remove_relations_targeting(store_root: str, target_type: str, target_slug: str) -> list[tuple[str, str]]:
+    """target_type/target_slug 노드를 semantic 관계의 "to"로 가리키는 항목을
+    시스템 전체(모든 concept/entity 파일)에서 찾아 지운다.
+
+    remove_relation()은 관계를 "만든 쪽"(from) 노드 하나만 고치면 되지만(단일
+    소유 원칙), 노드 자체를 통째로 지울 때는 사정이 다르다 - delete_node()가
+    지우는 건 "to"가 될 수도 있던 그 노드 파일 자신이고, 그 노드를 relations[]에서
+    target_slug로 가리키던 다른 노드들(from)은 전혀 건드려지지 않은 채로 남는다.
+    그대로 두면 remove_source()가 없던 시절의 문제(파일 없는 죽은 참조)와
+    똑같이, 이제는 relations[]에 "가리키는 노드 파일 자체가 없는" 유령 관계가
+    영구히 남는다 - remove_source()가 논문 삭제 시 모든 노드의 sources[]를
+    훑어 정리하는 것과 정확히 같은 이유로, 노드 삭제 시에도 이 정리가 필요하다.
+
+    영향받은 (node_type, slug) 목록을 반환한다 - 호출부(app.py의
+    delete_node_endpoint)가 이 목록으로 Neo4j 미러도 다시 동기화한다."""
+    affected: list[tuple[str, str]] = []
+    for node_type, dir_name in _DIR_BY_TYPE.items():
+        folder = Path(store_root) / dir_name
+        if not folder.is_dir():
+            continue
+        for path in sorted(folder.glob("*.md")):
+            frontmatter = _read_frontmatter(path)
+            relations = frontmatter.get("relations") or []
+            if not relations:
+                continue
+            remaining = [
+                r for r in relations
+                if not (r.get("target_type") == target_type and r.get("target_slug") == target_slug)
+            ]
+            if len(remaining) == len(relations):
+                continue
+            frontmatter["relations"] = remaining
+            user_section = _extract_user_section(path)
+            _write_node_file(path, frontmatter, user_section)
+            affected.append((node_type, frontmatter["slug"]))
+    return affected
+
+
 def _update_node(
     path: Path, label: str, aliases: list[str], source_slug: str, source_title: str,
     concept_slug: str | None = None,

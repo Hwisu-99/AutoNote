@@ -39,6 +39,8 @@ from paper_notes.node_store import (
     node_index,
     remove_alias,
     remove_category,
+    remove_relation,
+    remove_relations_targeting,
     remove_source,
     remove_source_from_node,
     rename_display_label,
@@ -492,6 +494,115 @@ async def get_graph(focus: list[str] = Query(default=[]), only_focus: bool = Fal
     동시에 켜면(멀티 토글) 그 논문들의 focus 그래프를 합쳐서 보여준다."""
     vault_path = get_vault_path()
     return build_graph(vault_path, focus, only_focus)
+
+
+@app.get("/api/graph/semantic")
+async def get_semantic_graph(focus: list[str] = Query(default=[]), only_focus: bool = False):
+    """/api/graph와 완전히 같지만 concept/entity 사이의 semantic 관계 에지도 함께
+    반환한다(build_graph의 include_semantic=True) - static/semantic_view.html
+    전용 데이터 소스다. 원래 그래프 뷰(/api/graph, static/graph.js)는 이 값을
+    아예 넘기지 않으므로 지금까지와 똑같은 결과만 받는다 - 두 뷰가 같은
+    build_graph()를 공유하면서도 서로의 동작에 영향을 주지 않는다."""
+    vault_path = get_vault_path()
+    return build_graph(vault_path, focus, only_focus, include_semantic=True)
+
+
+@app.get("/api/relation-types")
+async def get_relation_types_endpoint():
+    """concept/entity 사이 semantic 관계 화이트리스트({TYPE: {"symmetric": bool}})를
+    그대로 반환한다 - 그래프 뷰(관계 타입 고르는 컨텍스트 메뉴)와 semantic 뷰가
+    이 목록으로 선택지를 채운다. config/relation_types.json으로 커스터마이즈한
+    경우에도 항상 실제 화이트리스트와 일치하게 하기 위해 프론트에 하드코딩하지
+    않는다."""
+    return {"relation_types": load_relation_types(NODE_STORE_ROOT)}
+
+
+@app.get("/api/semantic-view/nodes")
+async def get_semantic_view_nodes():
+    """semantic 뷰의 "관계 생성" 패널 드롭다운을 채우기 위한 전체 concept/entity
+    슬러그+라벨 목록. /api/concepts(특정 논문에 연결된 concept만)와 달리 orphan을
+    포함한 전체 vault 대상이다 - semantic 관계는 논문과 무관하게 두 개념/용어
+    사이에 직접 맺어지는 관계라 논문 연결 여부로 좁힐 이유가 없다."""
+    concepts = list_nodes(NODE_STORE_ROOT, "concept")
+    entities = list_nodes(NODE_STORE_ROOT, "entity")
+    return {
+        "concepts": [{"slug": n["slug"], "label": n["display_label"]} for n in concepts],
+        "entities": [{"slug": n["slug"], "label": n["display_label"]} for n in entities],
+    }
+
+
+class _CreateRelationPayload(BaseModel):
+    from_type: str
+    from_slug: str
+    to_type: str
+    to_slug: str
+    relation_type: str
+    rationale: str | None = None
+
+
+@app.post("/api/relations")
+async def create_relation(payload: _CreateRelationPayload):
+    """concept<->concept, concept<->entity, entity<->entity 사이의 semantic 관계
+    하나를 만든다. 그래프 뷰(static/graph.js)의 onConnectDrop()이 지금까지
+    무시하던 그 조합들을 드래그로 연결했을 때, 그리고 semantic 뷰
+    (static/semantic_view.html)의 드래그 연결/생성 패널이 여기로 온다 - 두
+    진입점이 로직을 중복시키지 않고 이 endpoint 하나만 공유한다.
+
+    rationale은 선택 - 넘기지 않거나 빈 문자열이면 add_relation()의 기본값
+    ""으로 저장된다(그래프 뷰에서는 사용자가 프롬프트를 취소하면 null로 와서
+    이 케이스를 탄다).
+
+    대칭 타입(COMPARED_TO/CONTRADICTS/RELATED)의 from/to 정규화는
+    ingest_summary_nodes()/temp/graph_view_server.py와 완전히 같은 규칙
+    ((type, slug) 알파벳순)을 여기서도 그대로 적용한다 - 그래야 "A related_to B"를
+    어느 방향으로 그려도 항상 같은 에지 하나로 합쳐진다."""
+    if payload.from_type not in ("concept", "entity") or payload.to_type not in ("concept", "entity"):
+        raise HTTPException(status_code=400, detail="from_type/to_type은 concept 또는 entity여야 합니다.")
+    if payload.from_type == payload.to_type and payload.from_slug == payload.to_slug:
+        raise HTTPException(status_code=400, detail="같은 노드끼리는 관계를 만들 수 없습니다.")
+
+    relation_types = load_relation_types(NODE_STORE_ROOT)
+    if payload.relation_type not in relation_types:
+        raise HTTPException(status_code=400, detail="알 수 없는 관계 타입입니다.")
+
+    from_type, from_slug = payload.from_type, payload.from_slug
+    to_type, to_slug = payload.to_type, payload.to_slug
+    if relation_types[payload.relation_type].get("symmetric") and (from_type, from_slug) > (to_type, to_slug):
+        from_type, from_slug, to_type, to_slug = to_type, to_slug, from_type, from_slug
+
+    try:
+        add_relation(
+            NODE_STORE_ROOT, from_type, from_slug, payload.relation_type, to_type, to_slug,
+            "", rationale=payload.rationale or "",
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    _sync_node(from_type, from_slug)
+    return {"ok": True, "from_type": from_type, "from_slug": from_slug, "to_type": to_type, "to_slug": to_slug}
+
+
+@app.delete("/api/nodes/{node_type}/{slug}/relations/{relation_type}/{target_type}/{target_slug}")
+async def delete_relation(node_type: str, slug: str, relation_type: str, target_type: str, target_slug: str):
+    """semantic 뷰에서 관계 에지를 우클릭(또는 패널 버튼)으로 지울 때 호출된다.
+    관계는 항상 "from" 쪽 노드의 relations[]에만 저장되므로(add_relation()의
+    단일 소유 규칙), remove_relation()이 그 파일 하나만 고치면 되고 "to" 쪽에
+    유령 항목이 남는 경우 자체가 구조적으로 생기지 않는다(temp/graph_view_server.py에서
+    먼저 검증됨). 대칭 타입이라도 그래프 데이터가 이미 정규화된 방향으로 들어
+    있으므로 여기서 다시 방향을 판단할 필요가 없다 - 호출하는 쪽이 그려진 에지의
+    from/to를 그대로 넘기면 된다."""
+    if node_type not in ("concept", "entity"):
+        raise HTTPException(status_code=404, detail="알 수 없는 노드 타입입니다.")
+    try:
+        removed = remove_relation(NODE_STORE_ROOT, node_type, slug, relation_type, target_type, target_slug)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if not removed:
+        raise HTTPException(status_code=404, detail="그 관계를 찾을 수 없습니다.")
+    _sync_node(node_type, slug)
+    return {"ok": True}
 
 
 @app.get("/api/papers")
@@ -1196,6 +1307,19 @@ async def delete_node_endpoint(node_type: str, slug: str, cascade_entities: bool
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     _delete_node_from_graph(node_type, slug)
 
+    # 이 노드를 semantic 관계의 "to"로 가리키던 다른 concept/entity가 있으면
+    # (예: A -[USES]-> 지금 지우는 이 노드) 그 relations[]에 파일 없는 유령
+    # 항목이 남지 않도록 정리한다 - remove_source()가 논문 삭제 시 모든 노드의
+    # sources[]를 정리하는 것과 같은 이유. cascade_entities로 entity까지
+    # 같이 지우는 경우엔 그 entity들을 가리키던 관계도 같이 정리해야 한다.
+    relation_targets_to_clean = [(node_type, slug)]
+    if cascade_entities:
+        relation_targets_to_clean += [("entity", s) for s in linked_entity_slugs]
+    affected_by_relation_cleanup: set[tuple[str, str]] = set()
+    for target_type, target_slug in relation_targets_to_clean:
+        for affected_type, affected_slug in remove_relations_targeting(NODE_STORE_ROOT, target_type, target_slug):
+            affected_by_relation_cleanup.add((affected_type, affected_slug))
+
     if cascade_entities:
         for entity_slug in linked_entity_slugs:
             try:
@@ -1206,6 +1330,13 @@ async def delete_node_endpoint(node_type: str, slug: str, cascade_entities: bool
     else:
         for entity_slug in linked_entity_slugs:
             _sync_node("entity", entity_slug)
+
+    for affected_type, affected_slug in affected_by_relation_cleanup:
+        # 방금 cascade로 같이 지운 entity 자신은 다시 동기화할 필요가 없다(이미
+        # Neo4j에서도 삭제됐음) - 그 외에는 relations[]가 바뀌었으니 다시 동기화한다.
+        if cascade_entities and (affected_type, affected_slug) in {("entity", s) for s in linked_entity_slugs}:
+            continue
+        _sync_node(affected_type, affected_slug)
 
     return {"ok": True}
 

@@ -728,9 +728,11 @@ function renderGraph(data) {
   // 다른 논문/개념 노드로 드래그해 연결할 때(onConnectDrop), source/target이 어떤
   // 조합이면 어느 API를 어떻게 호출해야 하는지 판단한다. 규칙: concept -> note,
   // entity -> note, entity -> concept(그 concept의 sources 중에서 골라 paper_slug로
-  // 씀 - 1개면 바로, 2개 이상이면 드롭 지점에 논문 선택 메뉴)만 유효하고 나머지
-  // 조합(note가 source, concept<->concept, entity<->entity, concept -> entity 등)은
-  // 무시한다.
+  // 씀 - 1개면 바로, 2개 이상이면 드롭 지점에 논문 선택 메뉴)는 기존 그대로 논문
+  // 연결/그룹핑을 처리하고, concept<->concept, entity<->entity, concept -> entity
+  // (반대 방향인 entity -> concept은 위에서 이미 그룹핑으로 처리됨) 조합은 이제
+  // semantic 관계(12개 화이트리스트 타입) 생성으로 이어진다(openRelationTypeMenu).
+  // note가 source인 경우만 여전히 무시한다(위 첫 줄에서 이미 걸러짐).
   async function onConnectDrop(source, target, sourceEvent) {
     if ((source.type !== 'concept' && source.type !== 'entity') || !source.node_slug) return;
 
@@ -761,6 +763,67 @@ function renderGraph(data) {
         await callLinkApi('entity', source.node_slug, paperId, target.node_slug, { reload: false });
       }
       loadGraph(currentFocusSlugs, currentFocusSlugs.length > 0);
+      return;
+    }
+    if (
+      target.node_slug &&
+      ((source.type === 'concept' && target.type === 'concept') ||
+        (source.type === 'entity' && target.type === 'entity') ||
+        (source.type === 'concept' && target.type === 'entity'))
+    ) {
+      openRelationTypeMenu(source, target, sourceEvent);
+    }
+  }
+
+  // concept<->concept, entity<->entity, concept -> entity를 드래그로 연결하면
+  // 여기로 온다 - 기존 showContextMenu() 컴포넌트를 그대로 재사용해 12개
+  // 관계 타입(화이트리스트) 중 하나를 고르는 메뉴를 드롭 지점에 띄운다. 이
+  // 그래프 뷰는 semantic 에지 자체를 그리지 않으므로(원래 그래프 뷰는 그대로
+  // 유지 - 전체를 보려면 Semantic View 참고), 생성 성공/실패는 alert로만
+  // 알려준다.
+  let _relationTypesCache = null;
+  async function openRelationTypeMenu(source, target, sourceEvent) {
+    if (!_relationTypesCache) {
+      try {
+        const res = await fetch('/api/relation-types');
+        if (!res.ok) throw new Error('failed');
+        _relationTypesCache = (await res.json()).relation_types || {};
+      } catch {
+        alert('관계 타입 목록을 불러오지 못했습니다.');
+        return;
+      }
+    }
+    const items = Object.keys(_relationTypesCache).map((relType) => ({
+      label: relType + (_relationTypesCache[relType]?.symmetric ? ' (대칭)' : ''),
+      onClick: () => createSemanticRelation(source, target, relType),
+    }));
+    showContextMenu(sourceEvent.clientX, sourceEvent.clientY, items);
+  }
+
+  async function createSemanticRelation(source, target, relationType) {
+    // 취소(Cancel)하면 null이 오고, 그 경우 rationale 없이(서버 기본값 "") 관계를
+    // 만든다 - "관계 타입은 고르되 rationale은 선택"이라는 요구사항 그대로.
+    const rawRationale = prompt(
+      `${source.label} -[${relationType}]-> ${target.label}
+관계에 대한 설명(선택, 비워두면 생략):`
+    );
+    const rationale = rawRationale && rawRationale.trim() ? rawRationale.trim() : null;
+    try {
+      const res = await fetch('/api/relations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          from_type: source.type, from_slug: source.node_slug,
+          to_type: target.type, to_slug: target.node_slug,
+          relation_type: relationType, rationale,
+        }),
+      });
+      if (!res.ok) throw new Error('create relation failed');
+      // 이 그래프 뷰는 semantic 에지를 그리지 않으므로 새로고침은 불필요하다 -
+      // 방금 만든 관계는 Semantic View에서 바로 확인할 수 있다.
+      alert(`관계가 생성되었습니다: ${source.label} -[${relationType}]-> ${target.label}`);
+    } catch {
+      alert('관계 생성에 실패했습니다.');
     }
   }
 

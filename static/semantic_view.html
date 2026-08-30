@@ -1,0 +1,490 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>AutoNote Semantic View</title>
+<style>
+  :root {
+    --bg: #FAF9F5;
+    --surface: #FFFFFF;
+    --border: #E5E1D8;
+    --text: #2B2A28;
+    --text-muted: #6B6A65;
+    --accent: #D97757;
+    --accent-hover: #C86A4C;
+    --accent-soft: #FBE9E1;
+    --tag-green: #4C9A6A;
+    --entity-blue: #4C7FA6;
+    --attachment-yellow: #B8960C;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1F1E1D;
+      --surface: #262624;
+      --border: #3A3936;
+      --text: #E8E6E1;
+      --text-muted: #A9A79E;
+      --accent: #E08A67;
+      --accent-hover: #EA9C7C;
+      --accent-soft: #3A2A22;
+      --tag-green: #6FBE8F;
+      --entity-blue: #7FAFDE;
+      --attachment-yellow: #E0C341;
+    }
+  }
+  html, body { margin: 0; padding: 0; height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+               background: var(--bg); color: var(--text); }
+  #header {
+    position: absolute; top: 0; left: 0; right: 0; z-index: 10; padding: 10px 16px;
+    background: var(--surface); border-bottom: 1px solid var(--border); color: var(--text);
+    font-size: 13px; display: flex; gap: 16px; align-items: center; flex-wrap: wrap;
+  }
+  #header b { color: var(--text); }
+  .legend-item { display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); }
+  .back-link {
+    display: inline-flex; align-items: center; gap: 4px; color: var(--accent); text-decoration: none;
+    font-weight: 600; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border);
+  }
+  .back-link:hover { background: var(--accent-soft); border-color: var(--accent); }
+  .swatch { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+  label.toggle { display: inline-flex; align-items: center; gap: 4px; color: var(--text-muted); cursor: pointer; }
+  #network { position: absolute; top: 46px; left: 0; right: 320px; bottom: 0; }
+  #panel {
+    position: absolute; top: 46px; right: 0; bottom: 0; width: 320px; overflow-y: auto;
+    background: var(--surface); border-left: 1px solid var(--border); padding: 14px; box-sizing: border-box;
+    font-size: 13px;
+  }
+  #panel h3 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); }
+  #panel .section { margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid var(--border); }
+  #panel select, #panel input[type="text"] {
+    width: 100%; box-sizing: border-box; margin-bottom: 8px; padding: 6px 8px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 13px;
+  }
+  #panel button {
+    width: 100%; padding: 7px 10px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent-soft);
+    color: var(--accent); font-weight: 600; cursor: pointer; font-size: 13px;
+  }
+  #panel button:hover { background: var(--accent); color: var(--surface); }
+  #panel button.danger { border-color: #c0392b; background: transparent; color: #c0392b; }
+  #panel button.danger:hover { background: #c0392b; color: #fff; }
+  #selectedInfo { font-size: 12.5px; color: var(--text-muted); line-height: 1.6; white-space: pre-wrap; }
+  #toast {
+    position: absolute; left: 16px; bottom: 16px; z-index: 20; padding: 8px 14px; border-radius: 8px;
+    background: var(--text); color: var(--bg); font-size: 12.5px; opacity: 0; transform: translateY(6px);
+    transition: opacity .15s ease, transform .15s ease; pointer-events: none; max-width: 400px;
+  }
+  #toast.show { opacity: .95; transform: translateY(0); }
+  #ctx-menu {
+    position: fixed; z-index: 30; background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    box-shadow: 0 6px 20px rgba(0,0,0,.18); padding: 4px; display: none; min-width: 180px;
+  }
+  #ctx-menu .item {
+    padding: 7px 10px; border-radius: 5px; cursor: pointer; color: var(--text); font-size: 13px;
+  }
+  #ctx-menu .item:hover { background: var(--accent-soft); color: var(--accent); }
+  #ctx-menu .item.disabled { color: var(--text-muted); cursor: default; }
+  #ctx-menu .item.disabled:hover { background: none; }
+</style>
+</head>
+<body>
+<div id="header">
+  <a id="btnBackToGraphView" href="/" class="back-link">&larr; 원래 그래프 뷰로</a>
+  <b>AutoNote Semantic View</b>
+  <span id="counts" class="legend-item"></span>
+  <span class="legend-item"><span class="swatch" style="background:var(--accent)"></span>논문</span>
+  <span class="legend-item"><span class="swatch" style="background:var(--entity-blue)"></span>개념</span>
+  <span class="legend-item"><span class="swatch" style="background:var(--text-muted)"></span>용어</span>
+  <span class="legend-item"><span class="swatch" style="background:var(--tag-green)"></span>태그</span>
+  <span class="legend-item"><span class="swatch" style="background:#999; opacity:.6"></span>연결(점선)</span>
+  <span class="legend-item">색깔 실선 = semantic 관계(화살표=방향, 없음=대칭)</span>
+  <label class="toggle"><input type="checkbox" id="toggleTags" checked /> 태그 표시</label>
+  <label class="toggle"><input type="checkbox" id="toggleAttachments" /> 첨부파일 표시</label>
+  <span style="flex:1"></span>
+  <span id="loadingLabel" class="legend-item"></span>
+</div>
+<div id="network"></div>
+<div id="panel">
+  <div class="section">
+    <h3>관계 생성</h3>
+    <select id="fromType">
+      <option value="concept">개념(concept)</option>
+      <option value="entity">용어(entity)</option>
+    </select>
+    <select id="fromSlug"></select>
+    <select id="relType"></select>
+    <select id="toType">
+      <option value="concept">개념(concept)</option>
+      <option value="entity">용어(entity)</option>
+    </select>
+    <select id="toSlug"></select>
+    <input type="text" id="rationale" placeholder="관계 설명(선택, rationale)" />
+    <button id="btnCreate">관계 생성</button>
+  </div>
+  <div class="section">
+    <h3>선택한 항목</h3>
+    <div id="selectedInfo">노드나 에지를 클릭하세요.</div>
+    <button class="danger" id="btnDelete" style="display:none; margin-top: 10px;">이 관계 삭제</button>
+  </div>
+  <div class="section" style="border-bottom: none;">
+    <h3>사용법</h3>
+    <div style="color: var(--text-muted); line-height: 1.6;">
+      · 개념/용어 노드를 서로 드래그로 연결하면 위 생성 폼에 자동으로 채워집니다(타입 고르고 "관계 생성" 클릭).<br>
+      · semantic 관계 에지를 우클릭하면 바로 삭제할 수 있습니다.<br>
+      · 논문↔개념/용어, 개념↔용어 연결(점선)은 원래 그래프 뷰에서 관리합니다 - 여기서는 삭제할 수 없습니다.
+    </div>
+  </div>
+</div>
+<div id="toast"></div>
+<div id="ctx-menu"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.9/standalone/umd/vis-network.min.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  function cssVar(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
+
+  // 회색 계열이 전혀 없고(LINKED_TO 점선/entity 노드 색과 안 겹침), 라이트/다크
+  // 테마 양쪽의 논문(accent)/개념(entity-blue)/용어(text-muted)/태그(tag-green)/
+  // 첨부(attachment-yellow) 색과도 redmean 색차 기준으로 충분히(전부 100 이상,
+  // 대부분 130~250) 떨어지도록 좌표 탐색으로 고른 12개 semantic 관계 타입 색.
+  // static/graph.js가 쓰는 실제 노드 색(위 cssVar들)과 대조해 검증했다.
+  const RELATION_COLORS = {
+    USES: '#a63030', IS_A: '#3cdddd', PART_OF: '#0682f4', EXTENDS: '#2525d0',
+    IMPROVES_ON: '#20b620', OUTPERFORMS: '#dd3cdd', SOLVES: '#06f578',
+    EVALUATED_ON: '#f8080c', LIMITED_BY: '#8730a6', COMPARED_TO: '#6fcb4d',
+    CONTRADICTS: '#dd3c7c', RELATED: '#a6f606',
+  };
+
+  // 에지 hover 시 relation type만 보이던 걸 rationale/sources까지 함께 보이도록
+  // 여러 줄로 조립한다 - rationale은 비어있을 수 있고(캐싱된 요약이 구 스키마라
+  // 이 논문 데이터엔 비어있는 경우가 있음), sources는 이 관계의 근거가 된
+  // 논문 slug 배열(node_store.add_relation()의 sources[])이다.
+  function buildEdgeTooltip(relType, symmetric, rationale, sources) {
+    const lines = [symmetric ? relType + ' (대칭)' : relType];
+    if (rationale) lines.push('rationale: ' + rationale);
+    if (sources && sources.length) lines.push('sources: ' + sources.join(', '));
+    return lines.join('\n');
+  }
+
+  function nodeColor(type) {
+    if (type === 'note') return cssVar('--accent');
+    if (type === 'concept') return cssVar('--entity-blue');
+    if (type === 'entity') return cssVar('--text-muted');
+    if (type === 'tag') return cssVar('--tag-green');
+    if (type === 'attachment') return cssVar('--attachment-yellow');
+    return '#888888';
+  }
+
+  function nodeShape(type) {
+    if (type === 'note') return 'box';
+    // 태그/첨부파일도 concept/entity와 같은 동그라미(dot)로 통일 - 크기(nodeSize)로만
+    // 구분해서 부차적인 노드라는 느낌을 준다.
+    return 'dot';
+  }
+
+  // 전반적으로 기존보다 살짝 작게 - note/concept/entity가 주인공, tag/attachment는
+  // 보조 정보라 더 작게 그린다(vis-network 기본값은 25).
+  function nodeSize(type) {
+    if (type === 'note') return 16;
+    if (type === 'concept' || type === 'entity') return 14;
+    return 8;
+  }
+
+  const network_el = document.getElementById('network');
+  const toastEl = document.getElementById('toast');
+  let toastTimer = null;
+  function toast(msg) {
+    toastEl.textContent = msg;
+    toastEl.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toastEl.classList.remove('show'), 2600);
+  }
+
+  const ctxMenuEl = document.getElementById('ctx-menu');
+  function hideCtxMenu() { ctxMenuEl.style.display = 'none'; ctxMenuEl.innerHTML = ''; }
+  function showCtxMenu(x, y, items) {
+    ctxMenuEl.innerHTML = '';
+    items.forEach((item) => {
+      const div = document.createElement('div');
+      div.className = 'item' + (item.disabled ? ' disabled' : '');
+      div.textContent = item.label;
+      if (!item.disabled) div.addEventListener('click', () => { hideCtxMenu(); item.onClick(); });
+      ctxMenuEl.appendChild(div);
+    });
+    ctxMenuEl.style.left = x + 'px';
+    ctxMenuEl.style.top = y + 'px';
+    ctxMenuEl.style.display = 'block';
+  }
+  document.addEventListener('click', (e) => { if (!ctxMenuEl.contains(e.target)) hideCtxMenu(); });
+
+  let relationTypes = {};
+  let nodesBySlug = { concept: {}, entity: {} };
+  let network = null;
+  let nodesDS = new vis.DataSet([]);
+  let edgesDS = new vis.DataSet([]);
+  let selectedEdge = null; // { edgeId, fromType, fromSlug, toType, toSlug, relationType }
+
+  let showTags = true;
+  let showAttachments = false;
+
+  // --- 데이터 로딩 ---
+  async function loadRelationTypes() {
+    const res = await fetch('/api/relation-types');
+    const data = await res.json();
+    relationTypes = data.relation_types || {};
+    const relSelect = document.getElementById('relType');
+    relSelect.innerHTML = Object.keys(relationTypes).map((t) =>
+      `<option value="${t}">${t}${relationTypes[t].symmetric ? ' (대칭)' : ''}</option>`
+    ).join('');
+  }
+
+  async function loadNodeLists() {
+    const res = await fetch('/api/semantic-view/nodes');
+    const data = await res.json();
+    nodesBySlug.concept = {};
+    nodesBySlug.entity = {};
+    (data.concepts || []).forEach((n) => { nodesBySlug.concept[n.slug] = n.label; });
+    (data.entities || []).forEach((n) => { nodesBySlug.entity[n.slug] = n.label; });
+    fillSlugSelect('fromType', 'fromSlug');
+    fillSlugSelect('toType', 'toSlug');
+  }
+
+  function fillSlugSelect(typeSelectId, slugSelectId) {
+    const type = document.getElementById(typeSelectId).value;
+    const slugSelect = document.getElementById(slugSelectId);
+    const entries = Object.entries(nodesBySlug[type] || {});
+    slugSelect.innerHTML = entries.map(([slug, label]) => `<option value="${slug}">${escapeHtml(label)}</option>`).join('');
+  }
+
+  function escapeHtml(s) {
+    const div = document.createElement('div');
+    div.textContent = s == null ? '' : String(s);
+    return div.innerHTML;
+  }
+
+  document.getElementById('fromType').addEventListener('change', () => fillSlugSelect('fromType', 'fromSlug'));
+  document.getElementById('toType').addEventListener('change', () => fillSlugSelect('toType', 'toSlug'));
+
+  async function loadGraph() {
+    document.getElementById('loadingLabel').textContent = '불러오는 중...';
+    const res = await fetch('/api/graph/semantic');
+    const data = await res.json();
+    document.getElementById('loadingLabel').textContent = '';
+    renderGraph(data);
+  }
+
+  function edgeKey(fromType, fromSlug, relType, toType, toSlug) {
+    return [fromType, fromSlug, relType, toType, toSlug].join('|');
+  }
+
+  function renderGraph(data) {
+    const nodeById = new Map((data.nodes || []).map((n) => [n.id, n]));
+    const visNodes = [];
+    const visEdges = [];
+    let linkedCount = 0;
+    let semanticCount = 0;
+
+    (data.nodes || []).forEach((n) => {
+      if (n.type === 'tag' && !showTags) return;
+      if (n.type === 'attachment' && !showAttachments) return;
+      visNodes.push({
+        id: n.id,
+        label: n.label,
+        color: nodeColor(n.type),
+        shape: nodeShape(n.type),
+        size: nodeSize(n.type),
+        font: { color: cssVar('--text'), size: n.type === 'tag' || n.type === 'attachment' ? 10 : 13 },
+        __type: n.type,
+        __node_slug: n.node_slug || null,
+      });
+    });
+    const keptIds = new Set(visNodes.map((n) => n.id));
+
+    (data.edges || []).forEach((e, i) => {
+      if (!keptIds.has(e.source) || !keptIds.has(e.target)) return;
+      if (e.type === 'semantic') {
+        semanticCount += 1;
+        const relType = e.relation_type || '';
+        const color = RELATION_COLORS[relType] || '#777777';
+        const fromNode = nodeById.get(e.source);
+        const toNode = nodeById.get(e.target);
+        visEdges.push({
+          id: 'sem:' + i, from: e.source, to: e.target, label: relType,
+          color: { color, hover: color, highlight: color },
+          width: e.symmetric ? 2.5 : 1.5,
+          arrows: e.symmetric ? '' : 'to',
+          dashes: false,
+          font: { color: cssVar('--text'), size: 10, strokeWidth: 0, background: cssVar('--surface') },
+          title: buildEdgeTooltip(relType, e.symmetric, e.rationale, e.sources),
+          __kind: 'semantic',
+          __relation_type: relType,
+          __from_type: fromNode ? fromNode.type : null,
+          __from_slug: fromNode ? fromNode.node_slug : null,
+          __to_type: toNode ? toNode.type : null,
+          __to_slug: toNode ? toNode.node_slug : null,
+        });
+      } else {
+        linkedCount += 1;
+        visEdges.push({
+          id: 'link:' + i, from: e.source, to: e.target, label: '',
+          color: { color: '#999999', hover: '#999999', highlight: '#999999' },
+          dashes: true, arrows: '', width: 1,
+          __kind: 'link',
+        });
+      }
+    });
+
+    document.getElementById('counts').textContent =
+      `노드 ${visNodes.length}개 · 연결 ${linkedCount}개 · semantic 관계 ${semanticCount}개`;
+
+    nodesDS.clear(); nodesDS.add(visNodes);
+    edgesDS.clear(); edgesDS.add(visEdges);
+
+    if (!network) {
+      network = new vis.Network(network_el, { nodes: nodesDS, edges: edgesDS }, {
+        physics: { barnesHut: { gravitationalConstant: -6000, springLength: 130, springConstant: 0.04 },
+                   stabilization: { iterations: 250 } },
+        interaction: { hover: true, tooltipDelay: 100 },
+        manipulation: {
+          enabled: true, addNode: false, editEdge: false, deleteNode: false, deleteEdge: false,
+          addEdge: function (edgeData, callback) {
+            const fromNode = nodesDS.get(edgeData.from);
+            const toNode = nodesDS.get(edgeData.to);
+            callback(null); // vis 내장 에지 추가는 취소 - 아래에서 생성 폼만 미리 채운다
+            if (!fromNode || !toNode) return;
+            if (!['concept', 'entity'].includes(fromNode.__type) || !['concept', 'entity'].includes(toNode.__type)) {
+              toast('개념/용어 노드끼리만 관계를 만들 수 있습니다.');
+              return;
+            }
+            if (!fromNode.__node_slug || !toNode.__node_slug) {
+              toast('아직 노드 파일이 없는 항목과는 관계를 만들 수 없습니다.');
+              return;
+            }
+            document.getElementById('fromType').value = fromNode.__type;
+            fillSlugSelect('fromType', 'fromSlug');
+            document.getElementById('fromSlug').value = fromNode.__node_slug;
+            document.getElementById('toType').value = toNode.__type;
+            fillSlugSelect('toType', 'toSlug');
+            document.getElementById('toSlug').value = toNode.__node_slug;
+            toast('아래 패널에서 관계 타입을 고르고 "관계 생성"을 누르세요.');
+          },
+        },
+      });
+
+      network.on('oncontext', (params) => {
+        params.event.preventDefault();
+        const edgeId = network.getEdgeAt(params.pointer.DOM);
+        if (!edgeId) { hideCtxMenu(); return; }
+        network.selectEdges([edgeId]);
+        const edge = edgesDS.get(edgeId);
+        selectEdgeInfo(edge);
+        if (edge.__kind !== 'semantic') {
+          showCtxMenu(params.event.clientX, params.event.clientY, [
+            { label: '이 뷰에서는 삭제할 수 없습니다 (원래 그래프 뷰 참고)', disabled: true },
+          ]);
+          return;
+        }
+        showCtxMenu(params.event.clientX, params.event.clientY, [
+          { label: `관계 삭제 (${edge.__relation_type})`, onClick: () => deleteRelation(edge) },
+        ]);
+      });
+
+      network.on('selectEdge', (params) => {
+        if (!params.edges.length) return;
+        const edge = edgesDS.get(params.edges[0]);
+        selectEdgeInfo(edge);
+      });
+      network.on('selectNode', (params) => {
+        if (!params.nodes.length) return;
+        const node = nodesDS.get(params.nodes[0]);
+        selectedEdge = null;
+        document.getElementById('btnDelete').style.display = 'none';
+        document.getElementById('selectedInfo').textContent =
+          `[${node.__type}] ${node.label}` + (node.__node_slug ? `\nslug: ${node.__node_slug}` : '\n(아직 노드 파일 없음)');
+      });
+    } else {
+      network.setData({ nodes: nodesDS, edges: edgesDS });
+    }
+  }
+
+  function selectEdgeInfo(edge) {
+    if (edge.__kind !== 'semantic') {
+      selectedEdge = null;
+      document.getElementById('btnDelete').style.display = 'none';
+      document.getElementById('selectedInfo').textContent = '연결(link) 에지 - 원래 그래프 뷰에서 관리합니다.';
+      return;
+    }
+    selectedEdge = edge;
+    document.getElementById('btnDelete').style.display = 'block';
+    document.getElementById('selectedInfo').textContent =
+      `${edge.__from_type}/${edge.__from_slug} -[${edge.__relation_type}]-> ${edge.__to_type}/${edge.__to_slug}` +
+      (edge.title ? '\n' + edge.title : '');
+  }
+
+  async function deleteRelation(edge) {
+    if (!confirm(`"${edge.__relation_type}" 관계를 삭제할까요?`)) return;
+    try {
+      const res = await fetch(
+        `/api/nodes/${edge.__from_type}/${encodeURIComponent(edge.__from_slug)}/relations/` +
+        `${encodeURIComponent(edge.__relation_type)}/${edge.__to_type}/${encodeURIComponent(edge.__to_slug)}`,
+        { method: 'DELETE' }
+      );
+      if (!res.ok) throw new Error('delete failed');
+      toast('관계를 삭제했습니다.');
+      selectedEdge = null;
+      document.getElementById('btnDelete').style.display = 'none';
+      document.getElementById('selectedInfo').textContent = '노드나 에지를 클릭하세요.';
+      await loadGraph();
+    } catch {
+      toast('삭제에 실패했습니다.');
+    }
+  }
+
+  document.getElementById('btnDelete').addEventListener('click', () => {
+    if (selectedEdge) deleteRelation(selectedEdge);
+  });
+
+  document.getElementById('btnCreate').addEventListener('click', async () => {
+    const fromType = document.getElementById('fromType').value;
+    const fromSlug = document.getElementById('fromSlug').value;
+    const toType = document.getElementById('toType').value;
+    const toSlug = document.getElementById('toSlug').value;
+    const relationType = document.getElementById('relType').value;
+    const rationaleRaw = document.getElementById('rationale').value.trim();
+    if (!fromSlug || !toSlug) { toast('개념/용어를 먼저 선택하세요.'); return; }
+    if (fromType === toType && fromSlug === toSlug) { toast('같은 노드끼리는 관계를 만들 수 없습니다.'); return; }
+    try {
+      const res = await fetch('/api/relations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          from_type: fromType, from_slug: fromSlug, to_type: toType, to_slug: toSlug,
+          relation_type: relationType, rationale: rationaleRaw || null,
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.detail || 'create failed');
+      toast('관계를 생성했습니다.');
+      document.getElementById('rationale').value = '';
+      await loadGraph();
+    } catch (err) {
+      toast('생성 실패: ' + (err.message || '알 수 없는 오류'));
+    }
+  });
+
+  document.getElementById('toggleTags').addEventListener('change', (e) => { showTags = e.target.checked; loadGraph(); });
+  document.getElementById('toggleAttachments').addEventListener('change', (e) => { showAttachments = e.target.checked; loadGraph(); });
+
+  (async function init() {
+    showTags = document.getElementById('toggleTags').checked;
+    showAttachments = document.getElementById('toggleAttachments').checked;
+    await Promise.all([loadRelationTypes(), loadNodeLists()]);
+    await loadGraph();
+  })();
+})();
+</script>
+</body>
+</html>

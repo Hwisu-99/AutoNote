@@ -5,7 +5,8 @@ from pathlib import Path
 
 import yaml
 
-from paper_notes.node_store import IMAGE_EXTENSIONS, NODE_STORE_ROOT, list_nodes
+from paper_notes.node_store import IMAGE_EXTENSIONS, NODE_STORE_ROOT, get_relations, list_nodes
+from paper_notes.relation_types import load_relation_types
 
 # Obsidian wikilink syntax: [[target]], [[target|alias]], embeds !\[\[target]]
 _WIKILINK_RE = re.compile(r"!?\[\[([^\]|#]+)(?:\|[^\]]+)?\]\]")
@@ -27,7 +28,8 @@ def _parse_note(path: Path) -> tuple[dict, str]:
 
 
 def build_graph(
-    vault_path: str, focus_slug: str | list[str] | None = None, only_focus: bool = False
+    vault_path: str, focus_slug: str | list[str] | None = None, only_focus: bool = False,
+    include_semantic: bool = False,
 ) -> dict:
     """AutoNote/ 폴더의 논문 노트와 node_store(_concepts/_entities)를 스캔해
     Obsidian 그래프 뷰와 같은 방식으로 노드/에지를 만든다: 노트 = 주황 노드,
@@ -43,7 +45,12 @@ def build_graph(
     focus_slug는 논문 slug 하나(str) 또는 여러 개(list[str])를 받는다 - 여러
     개면 각 논문의 1~2촌 범위를 따로 구하는 게 아니라, 그 논문들을 모두 keep_ids의
     시작점으로 삼아 한 번에 확장한다. 그러면 자연히 여러 논문의 focus 그래프를
-    합친 결과가 된다(같은 concept/entity를 공유하면 한 번만 나타남)."""
+    합친 결과가 된다(같은 concept/entity를 공유하면 한 번만 나타남).
+
+    include_semantic=True면 concept/entity의 relations[] 필드(12개 화이트리스트
+    semantic 관계 타입)도 에지로 얹는다 - 기본값 False라 /api/graph(기존 그래프
+    뷰)의 동작은 지금까지와 완전히 동일하고, semantic 뷰(/api/graph/semantic)만
+    이 인자를 True로 넘긴다."""
     focus_slugs = {focus_slug} if isinstance(focus_slug, str) else set(focus_slug or [])
     autonote_dir = Path(vault_path) / "AutoNote"
     if not autonote_dir.is_dir():
@@ -154,8 +161,11 @@ def build_graph(
             if paper_slug in note_slugs:
                 edges.append({"source": paper_slug, "target": concept_id, "type": "link"})
 
+    entity_id_by_slug: dict[str, str] = {}
+
     for e in entity_nodes_store:
         entity_id = f"entity:{e['display_label']}"
+        entity_id_by_slug[e["slug"]] = entity_id
         sources = e.get("sources") or []
         nodes.append({"id": entity_id, "label": e["display_label"], "type": "entity",
                        "node_slug": e["slug"], "anchor_id": e.get("anchor_id")})
@@ -177,6 +187,33 @@ def build_graph(
             text = store_node["path"].read_text(encoding="utf-8")
             for md_image in _MD_IMAGE_RE.finditer(text):
                 _add_attachment(node_id, prefix, store_node["slug"], md_image.group(1).strip())
+
+
+    if include_semantic:
+        # concept<->concept, concept<->entity, entity<->entity 사이의 실제 지식
+        # 관계(node_store의 relations[] 필드, 단일 소유 - from 쪽에만 저장됨)를
+        # 에지로 얹는다. LINKED_TO 성격의 위 "link" 에지들과 구분되도록 type을
+        # "semantic"으로 둔다 - 프론트가 색/화살표를 다르게 그릴 수 있게 relation_type과
+        # symmetric(대칭 타입이면 화살표 없이/방향 무의미하게 그리라는 힌트)도 같이 얹는다.
+        relation_types = load_relation_types(NODE_STORE_ROOT)
+        id_by_slug = {"concept": concept_id_by_slug, "entity": entity_id_by_slug}
+        for node_type, node_list in (("concept", concept_nodes_store), ("entity", entity_nodes_store)):
+            from_id_by_slug = id_by_slug[node_type]
+            for n in node_list:
+                from_id = from_id_by_slug[n["slug"]]
+                for rel in get_relations(NODE_STORE_ROOT, node_type, n["slug"]):
+                    to_map = id_by_slug.get(rel.get("target_type"))
+                    if to_map is None or rel.get("target_slug") not in to_map:
+                        continue
+                    edges.append({
+                        "source": from_id,
+                        "target": to_map[rel["target_slug"]],
+                        "type": "semantic",
+                        "relation_type": rel.get("type", ""),
+                        "rationale": rel.get("rationale", ""),
+                        "sources": rel.get("sources") or [],
+                        "symmetric": relation_types.get(rel.get("type", ""), {}).get("symmetric", False),
+                    })
 
     if only_focus and focus_slugs:
         keep_ids = set(focus_slugs)
